@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/kpi-rollup",
+      "schedule": "30 12 * * *"
+    }
+  ]
+}
