@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect, use, useCallback } from 'react'
-import { Users, Phone, ShieldCheck, Star, DollarSign, PhoneMissed, BookOpen, Car, CalendarClock, AlertTriangle, Zap, Clock, CheckCircle2, XCircle, ChevronDown, ChevronUp } from 'lucide-react'
+import Link from 'next/link'
+import { Users, Phone, ShieldCheck, Star, DollarSign, PhoneMissed, BookOpen, Car, CalendarClock, AlertTriangle, Zap, Clock, CheckCircle2, XCircle, ChevronDown, ChevronUp, ArrowLeft } from 'lucide-react'
 import { LocationDetail, KpiDaily, StudentSummary, InstructorSummary, VehicleSummary, ComplianceItem, GbpReview, ClassSummary, DriveBacklogStudent } from '@/lib/types'
 import { formatCurrency, formatPercent, formatNumber, getScoreColor } from '@/lib/utils'
 import { cn } from '@/lib/utils'
@@ -451,6 +452,13 @@ export default function LocationDetailPage({ params }: { params: Promise<{ id: s
 
   return (
     <div className="space-y-8">
+      <Link
+        href={`/hub/${id}`}
+        className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+      >
+        <ArrowLeft className="w-4 h-4" />
+        Back to {location.name} Hub
+      </Link>
       <PageHeader title={location.name} subtitle="Location detail" />
 
       {/* KPI Cards */}

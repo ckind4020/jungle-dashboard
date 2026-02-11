@@ -229,6 +229,155 @@ export interface ScheduledDrive {
   scheduled_time: string
 }
 
+// === Hub ===
+
+export interface LocationProfile {
+  id: string
+  name: string
+  slug: string
+  is_active: boolean
+  address_line1: string | null
+  address_line2: string | null
+  city: string | null
+  state: string | null
+  zip_code: string | null
+  phone: string | null
+  email: string | null
+  timezone: string
+  manager_name: string | null
+  manager_email: string | null
+  manager_phone: string | null
+  business_hours: Record<string, { open: string; close: string } | null>
+  google_place_id: string | null
+  google_ads_customer_id: string | null
+  meta_ad_account_id: string | null
+  ctm_account_id: string | null
+  gbp_location_id: string | null
+  driveato_location_id: string | null
+  ghl_location_id: string | null
+  notes: string | null
+  logo_url: string | null
+  opened_date: string | null
+  state_min_classroom_hours: number | null
+  state_min_drive_hours: number | null
+  state_min_drive_count: number | null
+}
+
+export interface IntegrationSync {
+  id: string
+  organization_id: string
+  location_id: string
+  source: string
+  sync_type: string
+  status: 'success' | 'error' | 'running' | 'pending' | 'never'
+  started_at: string | null
+  completed_at: string | null
+  records_synced: number
+  error_message: string | null
+}
+
+export type IntegrationType = 'google_ads' | 'meta_ads' | 'call_tracking' | 'gbp' | 'driveato' | 'ghl'
+
+export interface IntegrationConfig {
+  type: IntegrationType
+  label: string
+  description: string
+  icon: string
+  color: string
+  accountIdField: keyof LocationProfile
+}
+
+export interface HubData {
+  location: LocationProfile
+  integrations: IntegrationSync[]
+  action_items_count: { critical: number; high: number; medium: number; low: number; total: number }
+  today_kpi: KpiDaily | null
+  quick_stats: {
+    active_students: number
+    outstanding_drives: number
+    upcoming_classes: number
+    open_leads: number
+    unreplied_reviews: number
+    compliance_score: number
+  }
+}
+
+// === Leads ===
+
+export interface LeadStage {
+  id: string
+  name: string
+  color: string
+  position: number
+}
+
+export interface Lead {
+  id: string
+  location_id: string
+  first_name: string
+  last_name: string
+  email: string | null
+  phone: string | null
+  phone_normalized: string | null
+  source: string
+  stage_id: string | null
+  score: number
+  is_archived: boolean
+  converted_at: string | null
+  utm_source: string | null
+  utm_medium: string | null
+  utm_campaign: string | null
+  created_at: string
+  updated_at: string
+  lead_stages?: LeadStage
+  locations?: { id: string; name: string }
+}
+
+export interface ActivityLog {
+  id: string
+  lead_id: string
+  activity_type: string
+  channel: string | null
+  direction: string | null
+  notes: string | null
+  metadata: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface LeadListResponse {
+  leads: Lead[]
+  stages: LeadStage[]
+  total: number
+  page: number
+  limit: number
+  totalPages: number
+}
+
+export interface LeadDetailResponse {
+  lead: Lead
+  activities: ActivityLog[]
+  stages: LeadStage[]
+}
+
+// === Automations ===
+
+export interface Automation {
+  id: string
+  location_id: string
+  name: string
+  description: string | null
+  trigger_type: string
+  trigger_config: Record<string, unknown>
+  filter_conditions: Record<string, unknown>
+  is_active: boolean
+  created_at: string
+  updated_at: string
+  step_count: number
+  enrolled_count: number
+  completed_count: number
+  total_enrolled: number
+}
+
 // === Marketing ===
 export interface MarketingData {
   ad_spend_by_location: AdSpendSummary[]

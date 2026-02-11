@@ -1,0 +1,140 @@
+import { NextResponse } from 'next/server'
+import { createServiceClient } from '@/lib/supabase/server'
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id: locationId } = await params
+  const supabase = createServiceClient()
+
+  // Location profile (all columns)
+  const { data: location, error: locError } = await supabase
+    .from('locations')
+    .select('*')
+    .eq('id', locationId)
+    .single()
+
+  if (locError || !location) {
+    return NextResponse.json({ error: 'Location not found' }, { status: 404 })
+  }
+
+  // Integration syncs — get LATEST sync per source
+  const { data: allSyncs } = await supabase
+    .from('integration_syncs')
+    .select('*')
+    .eq('location_id', locationId)
+    .order('completed_at', { ascending: false })
+
+  // Deduplicate: keep only the most recent per source
+  const latestSyncs: any[] = []
+  const seenSources = new Set()
+  for (const sync of (allSyncs || [])) {
+    if (!seenSources.has(sync.source)) {
+      seenSources.add(sync.source)
+      latestSyncs.push(sync)
+    }
+  }
+
+  // Action items count
+  const { data: actionItems } = await supabase
+    .from('action_items')
+    .select('priority')
+    .eq('location_id', locationId)
+    .in('status', ['open', 'in_progress'])
+
+  const actionCounts = {
+    critical: (actionItems || []).filter((a: any) => a.priority === 'critical').length,
+    high: (actionItems || []).filter((a: any) => a.priority === 'high').length,
+    medium: (actionItems || []).filter((a: any) => a.priority === 'medium').length,
+    low: (actionItems || []).filter((a: any) => a.priority === 'low').length,
+    total: (actionItems || []).length,
+  }
+
+  // Today's KPI — fall back to most recent day with data
+  const today = new Date().toISOString().split('T')[0]
+  let todayKpi = null
+  const { data: kpiData } = await supabase
+    .from('kpi_daily')
+    .select('*')
+    .eq('location_id', locationId)
+    .lte('date', today)
+    .order('date', { ascending: false })
+    .limit(1)
+    .single()
+  if (kpiData) todayKpi = kpiData
+
+  // Quick stats
+  const { data: activeStudents } = await supabase
+    .from('students')
+    .select('id, lessons_remaining')
+    .eq('location_id', locationId)
+    .eq('status', 'active')
+
+  const outstandingDrives = (activeStudents || []).reduce((sum: number, s: any) => sum + (s.lessons_remaining || 0), 0)
+
+  const { data: upcomingClasses } = await supabase
+    .from('classes')
+    .select('id')
+    .eq('location_id', locationId)
+    .in('status', ['scheduled', 'in_progress'])
+
+  const { data: openLeads } = await supabase
+    .from('leads')
+    .select('id')
+    .eq('location_id', locationId)
+    .eq('is_archived', false)
+    .is('converted_at', null)
+
+  const { data: unrepliedReviews } = await supabase
+    .from('gbp_reviews')
+    .select('id')
+    .eq('location_id', locationId)
+    .eq('has_reply', false)
+
+  return NextResponse.json({
+    location,
+    integrations: latestSyncs,
+    action_items_count: actionCounts,
+    today_kpi: todayKpi,
+    quick_stats: {
+      active_students: (activeStudents || []).length,
+      outstanding_drives: outstandingDrives,
+      upcoming_classes: (upcomingClasses || []).length,
+      open_leads: (openLeads || []).length,
+      unreplied_reviews: (unrepliedReviews || []).length,
+      compliance_score: Number(todayKpi?.compliance_score || 100),
+    },
+  })
+}
+
+// PATCH — update location settings
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id: locationId } = await params
+  const supabase = createServiceClient()
+  const body = await request.json()
+
+  const allowedFields = [
+    'name', 'address_line1', 'address_line2', 'city', 'state', 'zip_code',
+    'phone', 'email', 'timezone', 'manager_name', 'manager_email', 'manager_phone',
+    'business_hours', 'google_place_id', 'google_ads_customer_id', 'meta_ad_account_id',
+    'ctm_account_id', 'gbp_location_id', 'driveato_location_id', 'ghl_location_id',
+    'notes', 'logo_url', 'opened_date',
+  ]
+
+  const updates: Record<string, any> = {}
+  for (const key of allowedFields) {
+    if (key in body) updates[key] = body[key]
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
+  }
+
+  const { error } = await supabase
+    .from('locations')
+    .update(updates)
+    .eq('id', locationId)
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ success: true })
+}

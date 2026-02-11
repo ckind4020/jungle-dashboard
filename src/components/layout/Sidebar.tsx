@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { LayoutDashboard, Trophy, Megaphone, ShieldCheck, Zap, MapPin, Menu, X } from 'lucide-react'
+import { LayoutDashboard, Trophy, Megaphone, ShieldCheck, Zap, MapPin, Menu, X, Settings, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface LocationLink {
@@ -33,11 +33,11 @@ export default function Sidebar() {
   const [mobileOpen, setMobileOpen] = useState(false)
 
   useEffect(() => {
-    fetch('/api/dashboard')
+    fetch('/api/manage/locations')
       .then(res => res.json())
       .then(data => {
-        if (data.locations) {
-          setLocations(data.locations.map((l: LocationLink) => ({
+        if (Array.isArray(data)) {
+          setLocations(data.map((l: LocationLink) => ({
             id: l.id,
             name: l.name,
             slug: l.slug || l.id,
@@ -118,18 +118,18 @@ export default function Sidebar() {
           })}
         </div>
 
-        {locations.length > 0 && (
-          <div className="mt-8 px-3">
-            <p className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-              Locations
-            </p>
+        <div className="mt-8 px-3">
+          <p className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+            Locations
+          </p>
+          {locations.length > 0 ? (
             <div className="space-y-1">
               {locations.map(loc => {
-                const isActive = pathname === `/locations/${loc.id}`
+                const isActive = pathname.startsWith(`/hub/${loc.id}`) || pathname.startsWith(`/leads/${loc.id}`) || pathname.startsWith(`/locations/${loc.id}`) || pathname.startsWith(`/automations/${loc.id}`)
                 return (
                   <Link
                     key={loc.id}
-                    href={`/locations/${loc.id}`}
+                    href={`/hub/${loc.id}`}
                     className={cn(
                       'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
                       isActive
@@ -143,8 +143,31 @@ export default function Sidebar() {
                 )
               })}
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="px-3 space-y-2">
+              <p className="text-xs text-gray-500">No locations yet</p>
+              <Link href="/manage" className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors">
+                <Plus className="w-3.5 h-3.5" /> Add your first location
+              </Link>
+            </div>
+          )}
+        </div>
+
+        {/* Manage link */}
+        <div className="mt-6 px-3">
+          <Link
+            href="/manage"
+            className={cn(
+              'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
+              pathname === '/manage'
+                ? 'bg-gray-700 text-white'
+                : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
+            )}
+          >
+            <Settings className="w-4 h-4" />
+            Manage Locations
+          </Link>
+        </div>
       </nav>
     </>
   )
