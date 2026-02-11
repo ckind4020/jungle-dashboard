@@ -231,6 +231,14 @@ export interface ScheduledDrive {
 
 // === Hub ===
 
+export type FranchiseStatus = 'open' | 'basecamp' | 'deep_jungle' | 'live'
+
+export interface FranchiseOwner {
+  name: string
+  phone: string
+  email: string
+}
+
 export interface LocationProfile {
   id: string
   name: string
@@ -261,6 +269,18 @@ export interface LocationProfile {
   state_min_classroom_hours: number | null
   state_min_drive_hours: number | null
   state_min_drive_count: number | null
+  // Franchise core fields (migration 008)
+  location_number: string | null
+  franchise_status: FranchiseStatus | null
+  sign_date: string | null
+  go_live_date: string | null
+  expedition_date: string | null
+  franchise_owners: FranchiseOwner[]
+  franchise_operator_name: string | null
+  franchise_operator_phone: string | null
+  franchise_operator_email: string | null
+  assigned_support_partner: string | null
+  location_url: string | null
 }
 
 export interface IntegrationSync {
@@ -300,6 +320,8 @@ export interface HubData {
     unreplied_reviews: number
     compliance_score: number
   }
+  field_definitions: FieldDefinition[]
+  field_values: FieldValue[]
 }
 
 // === Leads ===
@@ -415,4 +437,34 @@ export interface GbpMetricsSummary {
   avg_search_views_7d: number
   avg_maps_views_7d: number
   avg_website_clicks_7d: number
+}
+
+// === Dynamic Fields ===
+
+export type FieldType = 'text' | 'textarea' | 'select' | 'multi_select' | 'date' | 'boolean' | 'url' | 'phone' | 'email' | 'number' | 'json'
+
+export interface FieldDefinition {
+  id: string
+  organization_id: string
+  field_name: string
+  field_key: string
+  description: string | null
+  field_type: FieldType
+  options: string[]
+  field_group: string
+  display_order: number
+  is_required: boolean
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface FieldValue {
+  id: string
+  location_id: string
+  field_id: string
+  value: string | null
+  value_json: any | null
+  created_at: string
+  updated_at: string
 }

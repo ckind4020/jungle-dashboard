@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { LayoutDashboard, Trophy, Megaphone, ShieldCheck, Zap, MapPin, Menu, X, Settings, Plus } from 'lucide-react'
+import { LayoutDashboard, Trophy, Megaphone, ShieldCheck, Zap, MapPin, Menu, X, Settings, Plus, Wrench } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface LocationLink {
@@ -153,8 +153,8 @@ export default function Sidebar() {
           )}
         </div>
 
-        {/* Manage link */}
-        <div className="mt-6 px-3">
+        {/* Manage & Admin links */}
+        <div className="mt-6 px-3 space-y-1">
           <Link
             href="/manage"
             className={cn(
@@ -166,6 +166,18 @@ export default function Sidebar() {
           >
             <Settings className="w-4 h-4" />
             Manage Locations
+          </Link>
+          <Link
+            href="/admin/fields"
+            className={cn(
+              'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
+              pathname === '/admin/fields'
+                ? 'bg-gray-700 text-white'
+                : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
+            )}
+          >
+            <Wrench className="w-4 h-4" />
+            Field Manager
           </Link>
         </div>
       </nav>

@@ -45,6 +45,8 @@ export async function POST(request: Request) {
       zip_code: body.zip_code || null,
       phone: body.phone || null,
       manager_name: body.manager_name || null,
+      location_number: body.location_number || null,
+      franchise_status: body.franchise_status || 'open',
       timezone: 'America/Chicago',
       business_hours: {
         monday: { open: '08:00', close: '18:00' },

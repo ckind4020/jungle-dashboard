@@ -91,6 +91,21 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     .eq('location_id', locationId)
     .eq('has_reply', false)
 
+  // Custom field definitions
+  const { data: fieldDefs } = await supabase
+    .from('location_field_definitions')
+    .select('*')
+    .eq('organization_id', location.organization_id)
+    .eq('is_active', true)
+    .order('field_group')
+    .order('display_order')
+
+  // Custom field values for this location
+  const { data: fieldValues } = await supabase
+    .from('location_field_values')
+    .select('*')
+    .eq('location_id', locationId)
+
   return NextResponse.json({
     location,
     integrations: latestSyncs,
@@ -104,6 +119,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       unreplied_reviews: (unrepliedReviews || []).length,
       compliance_score: Number(todayKpi?.compliance_score || 100),
     },
+    field_definitions: fieldDefs || [],
+    field_values: fieldValues || [],
   })
 }
 
@@ -119,6 +136,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     'business_hours', 'google_place_id', 'google_ads_customer_id', 'meta_ad_account_id',
     'ctm_account_id', 'gbp_location_id', 'driveato_location_id', 'ghl_location_id',
     'notes', 'logo_url', 'opened_date',
+    // Franchise core fields (migration 008)
+    'location_number', 'franchise_status', 'sign_date', 'go_live_date', 'expedition_date',
+    'franchise_owners', 'franchise_operator_name', 'franchise_operator_phone',
+    'franchise_operator_email', 'assigned_support_partner', 'location_url',
   ]
 
   const updates: Record<string, any> = {}
@@ -126,15 +147,40 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     if (key in body) updates[key] = body[key]
   }
 
-  if (Object.keys(updates).length === 0) {
+  if (Object.keys(updates).length > 0) {
+    const { error } = await supabase
+      .from('locations')
+      .update(updates)
+      .eq('id', locationId)
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  // Handle custom field values
+  if (body.custom_fields && typeof body.custom_fields === 'object') {
+    for (const [fieldId, value] of Object.entries(body.custom_fields)) {
+      const isJson = typeof value === 'object' && value !== null
+
+      const { error: valError } = await supabase
+        .from('location_field_values')
+        .upsert({
+          location_id: locationId,
+          field_id: fieldId,
+          value: isJson ? null : String(value ?? ''),
+          value_json: isJson ? value : null,
+        }, {
+          onConflict: 'location_id,field_id',
+        })
+
+      if (valError) {
+        console.error(`Failed to save field ${fieldId}:`, valError)
+      }
+    }
+  }
+
+  if (Object.keys(updates).length === 0 && !body.custom_fields) {
     return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
   }
 
-  const { error } = await supabase
-    .from('locations')
-    .update(updates)
-    .eq('id', locationId)
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ success: true })
 }

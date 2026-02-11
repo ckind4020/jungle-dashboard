@@ -23,6 +23,7 @@ export default function ManagePage() {
   const [showModal, setShowModal] = useState(false)
   const [form, setForm] = useState({
     name: '', address_line1: '', city: '', state: '', zip_code: '', phone: '', manager_name: '',
+    location_number: '', franchise_status: 'open',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -111,39 +112,50 @@ export default function ManagePage() {
         </div>
       ) : (
         <div className="space-y-4">
-          {locations.map((loc: any) => (
-            <div key={loc.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-3">
-                  <MapPin className="w-5 h-5 text-emerald-600 mt-0.5" />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-base font-semibold text-gray-900">{loc.name}</h3>
-                      <span className={cn(
-                        'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
-                        loc.is_active ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-600'
-                      )}>
-                        {loc.is_active ? 'Active' : 'Inactive'}
-                      </span>
+          {locations.map((loc: any) => {
+            const statusConfig: Record<string, { label: string; color: string }> = {
+              open: { label: 'Open', color: 'bg-gray-100 text-gray-700' },
+              basecamp: { label: 'Basecamp', color: 'bg-yellow-100 text-yellow-800' },
+              deep_jungle: { label: 'Deep Jungle', color: 'bg-blue-100 text-blue-800' },
+              live: { label: 'Live', color: 'bg-emerald-100 text-emerald-800' },
+            }
+            const status = statusConfig[loc.franchise_status] || statusConfig.open
+            const ownerNames = (loc.franchise_owners || []).map((o: any) => o.name).filter(Boolean).join(', ')
+            return (
+              <div key={loc.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-start gap-3">
+                    <MapPin className="w-5 h-5 text-emerald-600 mt-0.5" />
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {loc.location_number && (
+                          <span className="text-xs font-mono font-semibold text-gray-500">{loc.location_number}</span>
+                        )}
+                        <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium', status.color)}>
+                          {status.label}
+                        </span>
+                      </div>
+                      <h3 className="text-base font-semibold text-gray-900 mt-0.5">{loc.name}</h3>
+                      <p className="text-sm text-gray-500 mt-0.5">
+                        {[loc.address_line1, loc.city, loc.state, loc.zip_code].filter(Boolean).join(', ') || 'No address set'}
+                      </p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {ownerNames ? `Owners: ${ownerNames}` : (loc.manager_name ? `Manager: ${loc.manager_name}` : 'No owner/manager assigned')}
+                        {loc.assigned_support_partner && `  ·  Support: ${loc.assigned_support_partner}`}
+                        {loc.sign_date && `  ·  Signed: ${new Date(loc.sign_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`}
+                      </p>
                     </div>
-                    <p className="text-sm text-gray-500 mt-0.5">
-                      {[loc.address_line1, loc.city, loc.state, loc.zip_code].filter(Boolean).join(', ') || 'No address set'}
-                    </p>
-                    <p className="text-xs text-gray-400 mt-1">
-                      {loc.manager_name ? `Manager: ${loc.manager_name}` : 'No manager assigned'}
-                      {loc.opened_date && `  ·  Opened: ${new Date(loc.opened_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`}
-                    </p>
                   </div>
+                  <Link
+                    href={`/hub/${loc.id}`}
+                    className="text-sm font-medium text-blue-600 hover:text-blue-700 transition-colors whitespace-nowrap"
+                  >
+                    Open Hub →
+                  </Link>
                 </div>
-                <Link
-                  href={`/hub/${loc.id}`}
-                  className="text-sm font-medium text-blue-600 hover:text-blue-700 transition-colors whitespace-nowrap"
-                >
-                  Open Hub →
-                </Link>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
@@ -168,6 +180,22 @@ export default function ManagePage() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Location Name *</label>
                 <input type="text" className={inputClass} value={form.name} onChange={e => { setForm(prev => ({ ...prev, name: e.target.value })); setError('') }} placeholder="e.g. Jungle Driving School — Omaha" />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Location Number</label>
+                  <input type="text" className={inputClass} value={form.location_number} onChange={e => setForm(prev => ({ ...prev, location_number: e.target.value }))} placeholder="JUNGLE-118" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Franchise Status</label>
+                  <select className={inputClass} value={form.franchise_status} onChange={e => setForm(prev => ({ ...prev, franchise_status: e.target.value }))}>
+                    <option value="open">Open</option>
+                    <option value="basecamp">Basecamp</option>
+                    <option value="deep_jungle">Deep Jungle</option>
+                    <option value="live">Live</option>
+                  </select>
+                </div>
               </div>
 
               <div>
