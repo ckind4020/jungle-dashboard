@@ -2,7 +2,7 @@
 
 import { useState, useEffect, use, useCallback } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Workflow, Play, Pause, Zap } from 'lucide-react'
+import { ArrowLeft, Workflow, Play, Pause, Zap, Plus, Trash2 } from 'lucide-react'
 import { Automation } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -11,6 +11,8 @@ import { formatDistanceToNow } from 'date-fns'
 
 const TRIGGER_LABELS: Record<string, string> = {
   lead_created: 'New lead created',
+  stage_changed: 'Stage changed',
+  manual: 'Manual enrollment',
   stage_change: 'Stage changed',
   lead_score_change: 'Lead score updated',
   tag_added: 'Tag added',
@@ -23,6 +25,7 @@ export default function AutomationsPage({ params }: { params: Promise<{ location
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [locationName, setLocationName] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
   const fetchData = useCallback(() => {
     setLoading(true)
@@ -48,12 +51,22 @@ export default function AutomationsPage({ params }: { params: Promise<{ location
       .catch(() => {})
   }, [locationId])
 
-  const toggleActive = async (id: string, isActive: boolean) => {
+  const toggleActive = async (e: React.MouseEvent, id: string, isActive: boolean) => {
+    e.preventDefault()
+    e.stopPropagation()
     await fetch('/api/automations', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, is_active: !isActive }),
     })
+    fetchData()
+  }
+
+  const deleteAutomation = async (e: React.MouseEvent, id: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    await fetch(`/api/automations/${id}`, { method: 'DELETE' })
+    setConfirmDeleteId(null)
     fetchData()
   }
 
@@ -72,7 +85,17 @@ export default function AutomationsPage({ params }: { params: Promise<{ location
         <ArrowLeft className="w-4 h-4" /> Back to {locationName || 'Hub'}
       </Link>
 
-      <PageHeader title={`Automations${locationName ? ` — ${locationName}` : ''}`} />
+      <PageHeader
+        title={`Automations${locationName ? ` — ${locationName}` : ''}`}
+        action={
+          <Link
+            href={`/automations/${locationId}/new`}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 transition-colors"
+          >
+            <Plus className="w-4 h-4" /> Create Automation
+          </Link>
+        }
+      />
 
       {loading ? (
         <div className="space-y-4">
@@ -87,14 +110,24 @@ export default function AutomationsPage({ params }: { params: Promise<{ location
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
           <Workflow className="w-12 h-12 text-gray-300 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-gray-900 mb-2">No automations yet</h3>
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-gray-500 mb-6">
             Automations will auto-send SMS, emails, and update leads based on triggers you define.
           </p>
+          <Link
+            href={`/automations/${locationId}/new`}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 transition-colors"
+          >
+            <Plus className="w-4 h-4" /> Create Automation
+          </Link>
         </div>
       ) : (
         <div className="space-y-4">
           {automations.map(auto => (
-            <div key={auto.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
+            <Link
+              key={auto.id}
+              href={`/automations/${locationId}/${auto.id}`}
+              className="block bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow"
+            >
               <div className="flex items-start justify-between">
                 <div className="flex items-start gap-3">
                   <Zap className={cn('w-5 h-5 mt-0.5', auto.is_active ? 'text-amber-500' : 'text-gray-400')} />
@@ -125,19 +158,44 @@ export default function AutomationsPage({ params }: { params: Promise<{ location
                     </div>
                   </div>
                 </div>
-                <button
-                  onClick={() => toggleActive(auto.id, auto.is_active)}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
-                    auto.is_active
-                      ? 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                      : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                  <button
+                    onClick={(e) => toggleActive(e, auto.id, auto.is_active)}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                      auto.is_active
+                        ? 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                    )}
+                  >
+                    {auto.is_active ? <><Pause className="w-3.5 h-3.5" /> Pause</> : <><Play className="w-3.5 h-3.5" /> Activate</>}
+                  </button>
+                  {confirmDeleteId === auto.id ? (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={(e) => deleteAutomation(e, auto.id)}
+                        className="px-2 py-1 text-xs font-medium text-white bg-red-600 rounded-lg hover:bg-red-700"
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(null) }}
+                        className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(auto.id) }}
+                      className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg hover:bg-red-50 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   )}
-                >
-                  {auto.is_active ? <><Pause className="w-3.5 h-3.5" /> Pause</> : <><Play className="w-3.5 h-3.5" /> Activate</>}
-                </button>
+                </div>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}

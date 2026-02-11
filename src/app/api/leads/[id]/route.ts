@@ -68,6 +68,50 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         activity_type: 'stage_change',
         notes: `Stage changed from "${(oldLead as any).lead_stages?.name || 'Unknown'}" to "${newStage.name}"`,
       })
+
+      // Auto-enroll in matching automations (stage_changed trigger)
+      const { data: leadForLocation } = await supabase.from('leads').select('location_id').eq('id', id).single()
+      if (leadForLocation) {
+        const { data: matchingAutos } = await supabase
+          .from('automations')
+          .select('id, trigger_config')
+          .eq('location_id', leadForLocation.location_id)
+          .eq('is_active', true)
+          .eq('trigger_type', 'stage_changed')
+
+        if (matchingAutos?.length) {
+          for (const auto of matchingAutos) {
+            const tc = auto.trigger_config as any
+            if (tc?.to_stage_id && tc.to_stage_id !== body.stage_id) continue
+            if (tc?.from_stage_id && tc.from_stage_id !== (oldLead as any).stage_id) continue
+
+            // Check not already actively enrolled
+            const { data: existingEnroll } = await supabase
+              .from('automation_enrollments')
+              .select('id')
+              .eq('automation_id', auto.id)
+              .eq('lead_id', id)
+              .eq('status', 'active')
+              .limit(1)
+
+            if (existingEnroll && existingEnroll.length > 0) continue
+
+            await supabase.from('automation_enrollments').insert({
+              automation_id: auto.id,
+              lead_id: id,
+              current_step_order: 1,
+              status: 'active',
+              next_execution_at: new Date().toISOString(),
+            })
+
+            await supabase.from('activity_logs').insert({
+              lead_id: id,
+              activity_type: 'automation_enrolled',
+              notes: `Auto-enrolled in automation (stage changed to "${newStage.name}")`,
+            })
+          }
+        }
+      }
     }
   }
 

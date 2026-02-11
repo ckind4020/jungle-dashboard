@@ -38,6 +38,33 @@ export async function GET(request: Request) {
   return NextResponse.json(enriched)
 }
 
+// POST /api/automations — create new automation
+export async function POST(request: Request) {
+  const supabase = createServiceClient()
+  const body = await request.json()
+
+  if (!body.location_id || !body.name?.trim()) {
+    return NextResponse.json({ error: 'location_id and name are required' }, { status: 400 })
+  }
+
+  const { data, error } = await supabase
+    .from('automations')
+    .insert({
+      location_id: body.location_id,
+      name: body.name.trim(),
+      description: body.description || null,
+      trigger_type: body.trigger_type || 'manual',
+      trigger_config: body.trigger_config || {},
+      filter_conditions: body.filter_conditions || {},
+      is_active: false,
+    })
+    .select()
+    .single()
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json(data, { status: 201 })
+}
+
 // PATCH /api/automations — toggle active/paused
 export async function PATCH(request: Request) {
   const supabase = createServiceClient()
