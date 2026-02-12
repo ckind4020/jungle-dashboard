@@ -25,7 +25,7 @@ export default function OverviewTab({ data, onSwitchTab }: OverviewTabProps) {
   ]
 
   const quickLinks = [
-    { label: 'Location Dashboard', subtitle: 'View detailed metrics and trends', icon: BarChart3, href: `/locations/${location.id}`, enabled: true },
+    { label: 'Marketing Dashboard', subtitle: 'Leads, ads, calls, reviews', icon: BarChart3, href: `/dashboard/${location.id}`, enabled: true },
     { label: 'Action Items', subtitle: 'See what needs doing', icon: Zap, href: `/actions?location_id=${location.id}`, enabled: true },
     { label: 'Lead Pipeline', subtitle: 'Manage incoming leads and follow-ups', icon: Inbox, href: `/leads/${location.id}`, enabled: true },
     { label: 'Automations', subtitle: 'SMS & email sequences', icon: Workflow, href: `/automations/${location.id}`, enabled: true },
