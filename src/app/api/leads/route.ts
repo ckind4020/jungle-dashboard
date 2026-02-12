@@ -135,5 +135,37 @@ export async function POST(request: Request) {
     notes: `Lead created via dashboard (source: ${body.source || 'manual_entry'})`,
   })
 
+  // Auto-enroll in matching automations (trigger_type = 'lead_created')
+  const { data: matchingAutomations } = await supabase
+    .from('automations')
+    .select('id, trigger_type, trigger_config')
+    .eq('location_id', body.location_id)
+    .eq('is_active', true)
+    .eq('trigger_type', 'lead_created')
+
+  if (matchingAutomations?.length) {
+    for (const automation of matchingAutomations) {
+      // Check source filter if present
+      const sourceFilter = (automation.trigger_config as Record<string, unknown>)?.source_filter
+      if (sourceFilter && sourceFilter !== 'any' && sourceFilter !== (body.source || 'manual_entry')) {
+        continue
+      }
+
+      await supabase.from('automation_enrollments').insert({
+        automation_id: automation.id,
+        lead_id: lead.id,
+        current_step_order: 1,
+        status: 'active',
+        next_execution_at: new Date().toISOString(),
+      })
+
+      await supabase.from('activity_logs').insert({
+        lead_id: lead.id,
+        activity_type: 'automation_enrolled',
+        notes: `Auto-enrolled in automation: ${automation.id}`,
+      })
+    }
+  }
+
   return NextResponse.json(lead, { status: 201 })
 }

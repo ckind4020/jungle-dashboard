@@ -48,11 +48,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const supabase = createServiceClient()
   const body = await request.json()
 
-  // If changing stage, log it
+  // If changing stage, log it and check stage_changed automations
   if (body.stage_id) {
     const { data: oldLead } = await supabase
       .from('leads')
-      .select('stage_id, lead_stages!leads_stage_id_fkey(name)')
+      .select('stage_id, location_id, lead_stages!leads_stage_id_fkey(name)')
       .eq('id', id)
       .single()
 
@@ -68,6 +68,49 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         activity_type: 'stage_change',
         notes: `Stage changed from "${(oldLead as any).lead_stages?.name || 'Unknown'}" to "${newStage.name}"`,
       })
+
+      // Auto-enroll in stage_changed automations
+      const { data: matchingAutomations } = await supabase
+        .from('automations')
+        .select('id, trigger_config')
+        .eq('location_id', (oldLead as any).location_id)
+        .eq('is_active', true)
+        .eq('trigger_type', 'stage_changed')
+
+      if (matchingAutomations?.length) {
+        for (const automation of matchingAutomations) {
+          const config = automation.trigger_config as Record<string, unknown>
+          // Check to_stage_id matches
+          if (config?.to_stage_id && config.to_stage_id !== body.stage_id) continue
+          // Check from_stage_id if set
+          if (config?.from_stage_id && config.from_stage_id !== (oldLead as any).stage_id) continue
+
+          // Check not already enrolled
+          const { data: existing } = await supabase
+            .from('automation_enrollments')
+            .select('id')
+            .eq('automation_id', automation.id)
+            .eq('lead_id', id)
+            .eq('status', 'active')
+            .limit(1)
+
+          if (existing && existing.length > 0) continue
+
+          await supabase.from('automation_enrollments').insert({
+            automation_id: automation.id,
+            lead_id: id,
+            current_step_order: 1,
+            status: 'active',
+            next_execution_at: new Date().toISOString(),
+          })
+
+          await supabase.from('activity_logs').insert({
+            lead_id: id,
+            activity_type: 'automation_enrolled',
+            notes: `Auto-enrolled in automation (stage changed): ${automation.id}`,
+          })
+        }
+      }
     }
   }
 
