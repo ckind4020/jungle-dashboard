@@ -180,6 +180,20 @@ export async function GET(request: NextRequest) {
     )
   }
 
+  // Debug mode: return sample raw CTM response
+  if (searchParams.get('debug') === '1') {
+    const creds = getCtmCredentials(loc)
+    if (!creds) return NextResponse.json({ error: 'No CTM creds' }, { status: 400 })
+    const basicAuth = Buffer.from(`${creds.accessKey}:${creds.secretKey}`).toString('base64')
+    const endDate = new Date()
+    const startDate = new Date()
+    startDate.setDate(startDate.getDate() - 1)
+    const url = `${CTM_BASE_URL}/accounts/${creds.accountId}/calls.json?start_date=${startDate.toISOString().split('T')[0]}&end_date=${endDate.toISOString().split('T')[0]}&page=1&per_page=5`
+    const resp = await fetch(url, { headers: { 'Authorization': `Basic ${basicAuth}` }, signal: AbortSignal.timeout(15000) })
+    const raw = await resp.json()
+    return NextResponse.json({ sample_calls: raw.calls?.slice(0, 3), total_entries: raw.total_entries, keys: raw.calls?.[0] ? Object.keys(raw.calls[0]) : [] })
+  }
+
   const result = await syncCtmCalls(loc, days)
 
   if (!result.success) {
