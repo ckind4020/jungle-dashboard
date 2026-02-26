@@ -103,6 +103,7 @@ export async function syncCtmCalls(
   // 4. Fetch calls from CTM API with pagination
   const basicAuth = Buffer.from(`${creds.accessKey}:${creds.secretKey}`).toString('base64')
   const result: SyncResult = { synced: 0, skipped: 0, errors: 0 }
+  let firstError: string | null = null
 
   let page = 1
   let totalPages = 1
@@ -142,6 +143,7 @@ export async function syncCtmCalls(
 
       if (upsertError) {
         console.error(`Upsert error for call ${call.id}:`, upsertError.message)
+        if (!firstError) firstError = upsertError.message
         result.errors++
       } else {
         result.synced++
@@ -160,6 +162,7 @@ export async function syncCtmCalls(
     success: true,
     location: locationNumber,
     ...result,
+    ...(firstError ? { first_error: firstError } : {}),
     date_range: { start: startStr, end: endStr },
   }
 }
