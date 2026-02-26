@@ -3,19 +3,44 @@ import { createServiceClient } from '@/lib/supabase/server'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+const TZ = 'America/Chicago'
+
+// Get hour and day-of-week in Central Time
+function getCentralTime(date: Date): { hour: number; day: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ,
+    hour: 'numeric',
+    hour12: false,
+    weekday: 'short',
+  }).formatToParts(date)
+
+  const hourStr = parts.find(p => p.type === 'hour')?.value || '0'
+  const dayStr = parts.find(p => p.type === 'weekday')?.value || 'Mon'
+  const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+
+  return { hour: parseInt(hourStr), day: dayMap[dayStr] ?? 1 }
+}
+
+// Is this timestamp during business hours? M-F 8am-5pm Central
+function isDuringBusinessHours(date: Date): boolean {
+  const { hour, day } = getCentralTime(date)
+  return day >= 1 && day <= 5 && hour >= 8 && hour < 17
+}
+
+// Count business hours between two dates. M-F 8am-5pm Central (9 hrs/day).
+// If start is outside business hours, clock begins at next business hour.
 function businessHoursBetween(start: Date, end: Date): number {
-  // Count hours only M-F 8am-6pm (Central Time)
+  if (end <= start) return 0
+
   let hours = 0
+  // Step through in 1-hour increments
   const current = new Date(start)
 
   while (current < end) {
-    const day = current.getDay() // 0=Sun, 6=Sat
-    const hour = current.getHours()
-
-    if (day >= 1 && day <= 5 && hour >= 8 && hour < 18) {
+    if (isDuringBusinessHours(current)) {
       hours++
     }
-    current.setTime(current.getTime() + 60 * 60 * 1000) // add 1 hour
+    current.setTime(current.getTime() + 60 * 60 * 1000)
   }
   return hours
 }
@@ -39,7 +64,6 @@ export async function GET(
   // Previous period for comparison
   const prevStartDate = new Date(startDate)
   prevStartDate.setDate(prevStartDate.getDate() - days)
-  const prevStartStr = prevStartDate.toISOString().split('T')[0]
 
   // === 1. Location info ===
   const { data: location } = await supabase
@@ -153,7 +177,12 @@ export async function GET(
   const inboundCalls = callsArr.filter((c: any) => c.direction === 'inbound')
   const outboundTotal = callsArr.filter((c: any) => c.direction === 'outbound').length
 
-  // Primary metrics: inbound only
+  // Answer rate: only count inbound calls during business hours (M-F 8am-5pm CST)
+  const bhInbound = inboundCalls.filter((c: any) => isDuringBusinessHours(new Date(c.call_start)))
+  const bhAnswered = bhInbound.filter((c: any) => c.call_type === 'answered').length
+  const bhTotal = bhInbound.length
+
+  // Primary metrics: all inbound (total counts) + business-hours answer rate
   const callSummary = {
     total: inboundCalls.length,
     answered: inboundCalls.filter((c: any) => c.call_type === 'answered').length,
@@ -162,6 +191,11 @@ export async function GET(
     outbound: outboundTotal,
     avg_duration: 0,
     answer_rate: '0.0',
+    bh_total: bhTotal,
+    bh_answered: bhAnswered,
+    after_hours_missed: inboundCalls.filter((c: any) =>
+      c.call_type === 'missed' && !isDuringBusinessHours(new Date(c.call_start))
+    ).length,
   }
   const answeredInbound = inboundCalls.filter((c: any) => c.call_type === 'answered')
   if (answeredInbound.length > 0) {
@@ -169,8 +203,9 @@ export async function GET(
       answeredInbound.reduce((sum: number, c: any) => sum + (c.duration_seconds || 0), 0) / answeredInbound.length
     )
   }
-  if (callSummary.total > 0) {
-    callSummary.answer_rate = ((callSummary.answered / callSummary.total) * 100).toFixed(1)
+  // Answer rate based on business hours calls only
+  if (bhTotal > 0) {
+    callSummary.answer_rate = ((bhAnswered / bhTotal) * 100).toFixed(1)
   }
 
   // Calls by hour (inbound only)
@@ -199,23 +234,27 @@ export async function GET(
   }
 
   // === 6c. Callback tracking ===
-  // Get missed inbound calls
-  const missedInbound = callsArr.filter(
-    (c: any) => c.call_type === 'missed' && c.direction === 'inbound'
-  )
+  // Get ALL inbound missed calls (no date filter — show everything that needs a callback)
+  const { data: allMissedInbound } = await supabase
+    .from('call_tracking_records')
+    .select('call_type, call_start, caller_number, source, direction, activity_type')
+    .eq('location_id', locationId)
+    .eq('activity_type', 'call')
+    .eq('call_type', 'missed')
+    .eq('direction', 'inbound')
+    .order('call_start', { ascending: false })
 
-  // Get all outbound calls (current period + 2 day buffer after)
-  const bufferEnd = new Date(endDate)
-  bufferEnd.setDate(bufferEnd.getDate() + 2)
-  const { data: outboundCalls } = await supabase
+  const missedInboundArr = allMissedInbound || []
+
+  // Get ALL outbound calls (no start date filter — need full history for matching)
+  const { data: allOutboundCalls } = await supabase
     .from('call_tracking_records')
     .select('caller_number, call_start')
     .eq('location_id', locationId)
     .eq('activity_type', 'call')
     .eq('direction', 'outbound')
-    .gte('call_start', startDate.toISOString())
 
-  const outboundArr = outboundCalls || []
+  const outboundArr = allOutboundCalls || []
 
   // Match missed calls with subsequent outbound calls to same number
   const now = new Date()
@@ -223,7 +262,7 @@ export async function GET(
   let totalCallbackHours = 0
   let returnedCount = 0
 
-  for (const missed of missedInbound) {
+  for (const missed of missedInboundArr) {
     const missedTime = new Date((missed as any).call_start)
     const callerNum = (missed as any).caller_number
 
@@ -261,7 +300,7 @@ export async function GET(
       return true
     })
 
-  const totalMissedInbound = missedInbound.length
+  const totalMissedInbound = missedInboundArr.length
   const callbacks = {
     unreturned_calls: dedupedUnreturned,
     unreturned_count: dedupedUnreturned.length,
@@ -306,7 +345,7 @@ export async function GET(
     total_ad_spend: totalSpend,
     overall_cpl: overallCPL,
     total_calls: callSummary.total, // inbound only
-    call_answer_rate: callSummary.answer_rate,
+    call_answer_rate: callSummary.answer_rate, // business hours only
     gbp_rating: latestGbp?.[0]?.overall_rating || null,
     gbp_total_reviews: latestGbp?.[0]?.total_review_count || 0,
     unreplied_reviews: unrepliedCount || 0,

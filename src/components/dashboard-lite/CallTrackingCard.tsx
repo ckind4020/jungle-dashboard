@@ -137,7 +137,12 @@ export function CallTrackingCard({ callSummary, callsByHour, missedByHour, smsSu
                 <div className={cn('h-3 rounded-full transition-all', rateColor)} style={{ width: `${Math.min(answerRate, 100)}%` }} />
                 <div className="absolute top-0 bottom-0 w-0.5 bg-gray-400" style={{ left: '90%' }} />
               </div>
-              <p className="text-xs text-gray-400 mt-2">Target: 90%</p>
+              <p className="text-xs text-gray-400 mt-2">Target: 90% · Business hours only (M-F 8-5 CST)</p>
+              {callSummary.after_hours_missed > 0 && (
+                <p className="text-xs text-gray-400 mt-1">
+                  {callSummary.after_hours_missed} after-hours missed calls excluded
+                </p>
+              )}
             </div>
           </div>
         )}
