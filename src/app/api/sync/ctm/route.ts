@@ -103,6 +103,8 @@ export async function syncCtmCalls(
   let synced = 0
   let errors = 0
   let firstError: string | null = null
+  let ctmTotalEntries = 0
+  const activityCounts: Record<string, number> = {}
 
   let page = 1
   let totalPages = 1
@@ -129,11 +131,16 @@ export async function syncCtmCalls(
 
     const data = await response.json()
     totalPages = data.total_pages || 1
+    if (page === 1) ctmTotalEntries = data.total_entries || 0
     const calls: any[] = data.calls || []
 
     // 5. Batch upsert — process all calls from this page at once
     if (calls.length > 0) {
-      const mapped = calls.map((call) => mapCtmCall(call, location.id))
+      const mapped = calls.map((call) => {
+        const m = mapCtmCall(call, location.id)
+        activityCounts[m.activity_type] = (activityCounts[m.activity_type] || 0) + 1
+        return m
+      })
 
       const { error: upsertError } = await supabase
         .from('call_tracking_records')
@@ -163,6 +170,9 @@ export async function syncCtmCalls(
     skipped: 0,
     errors,
     ...(firstError ? { first_error: firstError } : {}),
+    ctm_total_entries: ctmTotalEntries,
+    pages_fetched: totalPages,
+    activity_breakdown: activityCounts,
     date_range: { start: startStr, end: endStr },
   }
 }
