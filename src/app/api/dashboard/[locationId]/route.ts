@@ -317,6 +317,29 @@ export async function GET(
     .order('date', { ascending: false })
     .limit(1)
 
+  // GBP metrics trend (for discovery chart)
+  const { data: gbpTrend } = await supabase
+    .from('gbp_metrics_daily')
+    .select('date, search_views, maps_views, total_views, website_clicks, phone_calls, direction_requests, photo_views')
+    .eq('location_id', locationId)
+    .gte('date', startStr)
+    .lte('date', endStr)
+    .order('date')
+
+  // GBP period totals
+  const gbpTotals = (gbpTrend || []).reduce((acc: any, row: any) => ({
+    search_views: acc.search_views + (row.search_views || 0),
+    maps_views: acc.maps_views + (row.maps_views || 0),
+    total_views: acc.total_views + (row.total_views || 0),
+    website_clicks: acc.website_clicks + (row.website_clicks || 0),
+    phone_calls: acc.phone_calls + (row.phone_calls || 0),
+    direction_requests: acc.direction_requests + (row.direction_requests || 0),
+    photo_views: acc.photo_views + (row.photo_views || 0),
+  }), {
+    search_views: 0, maps_views: 0, total_views: 0,
+    website_clicks: 0, phone_calls: 0, direction_requests: 0, photo_views: 0,
+  })
+
   const { data: recentReviews } = await supabase
     .from('gbp_reviews')
     .select('reviewer_name, star_rating, review_text, review_date, has_reply')
@@ -364,6 +387,8 @@ export async function GET(
     sms_summary: smsSummary,
     callbacks,
     gbp: latestGbp?.[0] || null,
+    gbp_trend: gbpTrend || [],
+    gbp_totals: gbpTotals,
     recent_reviews: recentReviews || [],
     period: { start: startStr, end: endStr, days },
   })

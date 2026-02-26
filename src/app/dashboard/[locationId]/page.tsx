@@ -10,7 +10,7 @@ import { AdSpendChart } from '@/components/dashboard-lite/AdSpendChart'
 import { CostPerLeadTable } from '@/components/dashboard-lite/CostPerLeadTable'
 import { LeadsBySourceChart } from '@/components/dashboard-lite/LeadsBySourceChart'
 import { CallTrackingCard } from '@/components/dashboard-lite/CallTrackingCard'
-import { GbpCard } from '@/components/dashboard-lite/GbpCard'
+import { GbpSection } from '@/components/dashboard-lite/GbpSection'
 import { cn } from '@/lib/utils'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -135,8 +135,10 @@ export default function DashboardLitePage({ params }: { params: Promise<{ locati
           />
 
           {/* GBP */}
-          <GbpCard
+          <GbpSection
             gbp={data.gbp}
+            gbpTotals={data.gbp_totals}
+            gbpTrend={data.gbp_trend}
             recentReviews={data.recent_reviews}
             unrepliedCount={data.summary.unreplied_reviews}
             locationId={locationId}
