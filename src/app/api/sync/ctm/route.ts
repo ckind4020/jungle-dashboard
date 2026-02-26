@@ -71,7 +71,7 @@ function mapCtmCall(call: any, locationId: string) {
 export async function syncCtmCalls(
   locationNumber: string,
   days: number
-): Promise<{ success: boolean; error?: string; location: string; synced: number; skipped: number; errors: number; first_error?: string; date_range: { start: string; end: string } }> {
+): Promise<{ success: boolean; error?: string; location: string; synced: number; skipped: number; errors: number; first_error?: string; ctm_total_entries?: number; pages_fetched?: number; activity_breakdown?: Record<string, number>; date_range: { start: string; end: string } }> {
   const supabase = createServiceClient()
 
   // 1. Look up location by location_number
