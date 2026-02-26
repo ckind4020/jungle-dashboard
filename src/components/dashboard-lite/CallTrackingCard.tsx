@@ -46,7 +46,7 @@ function urgencyColor(hours: number): { dot: string; text: string } {
 }
 
 export function CallTrackingCard({ callSummary, callsByHour, missedByHour, smsSummary, callbacks }: CallTrackingCardProps) {
-  const hasCallData = callSummary && callSummary.total > 0
+  const hasCallData = callSummary && (callSummary.total > 0 || callSummary.outbound > 0)
   const hasSmsData = smsSummary && smsSummary.total > 0
   const hasCallbacks = callbacks && callbacks.unreturned_count > 0
 
@@ -84,10 +84,10 @@ export function CallTrackingCard({ callSummary, callsByHour, missedByHour, smsSu
     <div className="space-y-4">
       {/* Top row: Call Volume, Answer Rate, Callback Performance */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Call Volume */}
+        {/* Inbound Call Volume */}
         {hasCallData && (
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Call Volume</h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Inbound Calls</h3>
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -117,8 +117,11 @@ export function CallTrackingCard({ callSummary, callsByHour, missedByHour, smsSu
                 </span>
               </div>
               <div className="pt-3 border-t border-gray-100">
-                <p className="text-xs text-gray-500">Avg call duration: <span className="font-medium text-gray-700">{formatDuration(callSummary.avg_duration)}</span></p>
-                <p className="text-xs text-gray-500 mt-1">Total calls: <span className="font-medium text-gray-700">{callSummary.total}</span></p>
+                <p className="text-xs text-gray-500">Avg duration: <span className="font-medium text-gray-700">{formatDuration(callSummary.avg_duration)}</span></p>
+                <div className="flex items-center justify-between mt-1">
+                  <p className="text-xs text-gray-500">Inbound total: <span className="font-medium text-gray-700">{callSummary.total}</span></p>
+                  <p className="text-xs text-gray-500">Outbound: <span className="font-medium text-gray-700">{callSummary.outbound || 0}</span></p>
+                </div>
               </div>
             </div>
           </div>
@@ -127,7 +130,7 @@ export function CallTrackingCard({ callSummary, callsByHour, missedByHour, smsSu
         {/* Answer Rate */}
         {hasCallData && (
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Answer Rate</h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Inbound Answer Rate</h3>
             <div className="flex flex-col items-center justify-center">
               <p className={cn('text-5xl font-bold', rateTextColor)}>{answerRate.toFixed(0)}%</p>
               <div className="w-full mt-4 bg-gray-200 rounded-full h-3 relative">

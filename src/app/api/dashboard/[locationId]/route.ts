@@ -138,7 +138,7 @@ export async function GET(
     .gte('created_at', prevStartDate.toISOString())
     .lt('created_at', startDate.toISOString())
 
-  // === 6. Call tracking — ONLY actual calls (activity_type = 'call') ===
+  // === 6. Call tracking — actual calls only (activity_type = 'call') ===
   const { data: calls } = await supabase
     .from('call_tracking_records')
     .select('call_type, call_start, duration_seconds, direction, caller_number, source, activity_type')
@@ -148,28 +148,35 @@ export async function GET(
     .lte('call_start', endDate.toISOString())
 
   const callsArr = calls || []
+
+  // Split inbound vs outbound
+  const inboundCalls = callsArr.filter((c: any) => c.direction === 'inbound')
+  const outboundTotal = callsArr.filter((c: any) => c.direction === 'outbound').length
+
+  // Primary metrics: inbound only
   const callSummary = {
-    total: callsArr.length,
-    answered: callsArr.filter((c: any) => c.call_type === 'answered').length,
-    missed: callsArr.filter((c: any) => c.call_type === 'missed').length,
-    voicemail: callsArr.filter((c: any) => c.call_type === 'voicemail').length,
+    total: inboundCalls.length,
+    answered: inboundCalls.filter((c: any) => c.call_type === 'answered').length,
+    missed: inboundCalls.filter((c: any) => c.call_type === 'missed').length,
+    voicemail: inboundCalls.filter((c: any) => c.call_type === 'voicemail').length,
+    outbound: outboundTotal,
     avg_duration: 0,
     answer_rate: '0.0',
   }
-  const answeredCalls = callsArr.filter((c: any) => c.call_type === 'answered')
-  if (answeredCalls.length > 0) {
+  const answeredInbound = inboundCalls.filter((c: any) => c.call_type === 'answered')
+  if (answeredInbound.length > 0) {
     callSummary.avg_duration = Math.round(
-      answeredCalls.reduce((sum: number, c: any) => sum + (c.duration_seconds || 0), 0) / answeredCalls.length
+      answeredInbound.reduce((sum: number, c: any) => sum + (c.duration_seconds || 0), 0) / answeredInbound.length
     )
   }
   if (callSummary.total > 0) {
     callSummary.answer_rate = ((callSummary.answered / callSummary.total) * 100).toFixed(1)
   }
 
-  // Calls by hour (only actual calls)
+  // Calls by hour (inbound only)
   const callsByHour: number[] = new Array(24).fill(0)
   const missedByHour: number[] = new Array(24).fill(0)
-  for (const call of callsArr) {
+  for (const call of inboundCalls) {
     const hour = new Date((call as any).call_start).getHours()
     callsByHour[hour]++
     if ((call as any).call_type === 'missed') missedByHour[hour]++
@@ -298,7 +305,7 @@ export async function GET(
       : null,
     total_ad_spend: totalSpend,
     overall_cpl: overallCPL,
-    total_calls: callSummary.total,
+    total_calls: callSummary.total, // inbound only
     call_answer_rate: callSummary.answer_rate,
     gbp_rating: latestGbp?.[0]?.overall_rating || null,
     gbp_total_reviews: latestGbp?.[0]?.total_review_count || 0,
