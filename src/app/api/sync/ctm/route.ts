@@ -23,14 +23,7 @@ interface CtmCall {
   state?: string
 }
 
-interface SyncResult {
-  synced: number
-  skipped: number
-  errors: number
-}
-
 function getCtmCredentials(locationNumber: string) {
-  // Extract numeric portion: "JUNGLE-101" → "101"
   const num = locationNumber.replace(/^JUNGLE-/i, '')
   const accountId = process.env[`CTM_${num}_ACCOUNT_ID`]
   const accessKey = process.env[`CTM_${num}_ACCESS_KEY`]
@@ -44,7 +37,6 @@ function getCtmCredentials(locationNumber: string) {
 }
 
 function mapCtmCall(call: CtmCall, locationId: string) {
-  // Determine call_type from CTM fields
   let callType: 'answered' | 'missed' | 'voicemail' = 'missed'
   if (call.voicemail) {
     callType = 'voicemail'
@@ -73,7 +65,7 @@ function mapCtmCall(call: CtmCall, locationId: string) {
 export async function syncCtmCalls(
   locationNumber: string,
   days: number
-): Promise<{ success: boolean; error?: string; location: string; synced: number; skipped: number; errors: number; date_range: { start: string; end: string } }> {
+): Promise<{ success: boolean; error?: string; location: string; synced: number; skipped: number; errors: number; first_error?: string; date_range: { start: string; end: string } }> {
   const supabase = createServiceClient()
 
   // 1. Look up location by location_number
@@ -102,7 +94,8 @@ export async function syncCtmCalls(
 
   // 4. Fetch calls from CTM API with pagination
   const basicAuth = Buffer.from(`${creds.accessKey}:${creds.secretKey}`).toString('base64')
-  const result: SyncResult = { synced: 0, skipped: 0, errors: 0 }
+  let synced = 0
+  let errors = 0
   let firstError: string | null = null
 
   let page = 1
@@ -112,9 +105,8 @@ export async function syncCtmCalls(
     const url = `${CTM_BASE_URL}/accounts/${creds.accountId}/calls.json?start_date=${startStr}&end_date=${endStr}&page=${page}&per_page=100`
 
     const response = await fetch(url, {
-      headers: {
-        'Authorization': `Basic ${basicAuth}`,
-      },
+      headers: { 'Authorization': `Basic ${basicAuth}` },
+      signal: AbortSignal.timeout(15000),
     })
 
     if (!response.ok) {
@@ -124,7 +116,7 @@ export async function syncCtmCalls(
         success: false,
         error: `CTM API returned ${response.status}: ${text.slice(0, 200)}`,
         location: locationNumber,
-        ...result,
+        synced, skipped: 0, errors,
         date_range: { start: startStr, end: endStr },
       }
     }
@@ -133,20 +125,20 @@ export async function syncCtmCalls(
     totalPages = data.total_pages || 1
     const calls: CtmCall[] = data.calls || []
 
-    // 5. Upsert each call
-    for (const call of calls) {
-      const mapped = mapCtmCall(call, location.id)
+    // 5. Batch upsert — process all calls from this page at once
+    if (calls.length > 0) {
+      const mapped = calls.map((call) => mapCtmCall(call, location.id))
 
       const { error: upsertError } = await supabase
         .from('call_tracking_records')
         .upsert(mapped, { onConflict: 'external_id' })
 
       if (upsertError) {
-        console.error(`Upsert error for call ${call.id}:`, upsertError.message)
+        console.error(`Batch upsert error (page ${page}):`, upsertError.message)
         if (!firstError) firstError = upsertError.message
-        result.errors++
+        errors += calls.length
       } else {
-        result.synced++
+        synced += calls.length
       }
     }
 
@@ -161,7 +153,9 @@ export async function syncCtmCalls(
   return {
     success: true,
     location: locationNumber,
-    ...result,
+    synced,
+    skipped: 0,
+    errors,
     ...(firstError ? { first_error: firstError } : {}),
     date_range: { start: startStr, end: endStr },
   }
