@@ -130,6 +130,8 @@ export default function DashboardLitePage({ params }: { params: Promise<{ locati
             callSummary={data.call_summary}
             callsByHour={data.calls_by_hour}
             missedByHour={data.missed_by_hour}
+            smsSummary={data.sms_summary}
+            callbacks={data.callbacks}
           />
 
           {/* GBP */}

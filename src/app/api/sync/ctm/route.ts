@@ -1,29 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/server'
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 const ORG_ID = '9a0d8a37-e9cf-4592-8b7d-e3762c243b0d'
 const CTM_BASE_URL = 'https://api.calltrackingmetrics.com/api/v1'
 
-interface CtmCall {
-  id: number | string
-  caller_number_bare?: string
-  caller_number?: string
-  tracking_number?: string
-  source?: string
-  duration?: number
-  talk_time?: number
-  answered?: boolean
-  status?: string
-  voicemail?: boolean
-  direction?: string
-  occurred_at?: string
-  created_at?: string
-  recording_url?: string
-  city?: string
-  state?: string
-}
-
-function getCtmCredentials(locationNumber: string) {
+export function getCtmCredentials(locationNumber: string) {
   const num = locationNumber.replace(/^JUNGLE-/i, '')
   const accountId = process.env[`CTM_${num}_ACCOUNT_ID`]
   const accessKey = process.env[`CTM_${num}_ACCESS_KEY`]
@@ -36,27 +19,50 @@ function getCtmCredentials(locationNumber: string) {
   return { accountId, accessKey, secretKey }
 }
 
-function mapCtmCall(call: CtmCall, locationId: string) {
-  let callType: 'answered' | 'missed' | 'voicemail' = 'missed'
-  if (call.voicemail) {
-    callType = 'voicemail'
-  } else if (call.answered === true || call.status === 'answered') {
-    callType = 'answered'
-  }
+function getActivityType(call: any): 'call' | 'text' | 'form' | 'chat' {
+  const dir = (call.direction || '').toLowerCase()
+  // CTM uses "msg_inbound" / "msg_outbound" for SMS
+  if (dir.startsWith('msg_') || dir.includes('sms') || dir.includes('text')) return 'text'
+  if (call.message_id && !call.audio) return 'text'
+  if (dir.includes('form')) return 'form'
+  if (dir.includes('chat')) return 'chat'
+  return 'call'
+}
+
+function getCallDirection(call: any): 'inbound' | 'outbound' {
+  const dir = (call.direction || '').toLowerCase()
+  if (dir.includes('outbound')) return 'outbound'
+  return 'inbound'
+}
+
+function getCallType(call: any, activityType: string): string {
+  // Non-call activity types get their own type
+  if (activityType !== 'call') return activityType
+
+  if (call.voicemail) return 'voicemail'
+  const status = (call.dial_status || call.status || '').toLowerCase()
+  if (status === 'answered' || call.answered === true) return 'answered'
+  if (status === 'voicemail') return 'voicemail'
+  return 'missed'
+}
+
+function mapCtmCall(call: any, locationId: string) {
+  const activityType = getActivityType(call)
 
   return {
     external_id: String(call.id),
     location_id: locationId,
     organization_id: ORG_ID,
     caller_number: call.caller_number_bare || call.caller_number || null,
-    tracking_number: call.tracking_number || null,
+    tracking_number: call.tracking_number_bare || call.tracking_number || null,
     source: call.source || null,
     duration_seconds: call.duration ?? 0,
     talk_time_seconds: call.talk_time ?? null,
-    call_type: callType,
-    direction: call.direction || 'inbound',
-    call_start: call.occurred_at || call.created_at || new Date().toISOString(),
-    recording_url: call.recording_url || null,
+    call_type: getCallType(call, activityType),
+    activity_type: activityType,
+    direction: getCallDirection(call),
+    call_start: call.called_at || call.occurred_at || call.created_at || new Date().toISOString(),
+    recording_url: call.audio || null,
     caller_city: call.city || null,
     caller_state: call.state || null,
   }
@@ -123,7 +129,7 @@ export async function syncCtmCalls(
 
     const data = await response.json()
     totalPages = data.total_pages || 1
-    const calls: CtmCall[] = data.calls || []
+    const calls: any[] = data.calls || []
 
     // 5. Batch upsert — process all calls from this page at once
     if (calls.length > 0) {

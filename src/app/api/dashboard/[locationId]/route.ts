@@ -3,6 +3,23 @@ import { createServiceClient } from '@/lib/supabase/server'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+function businessHoursBetween(start: Date, end: Date): number {
+  // Count hours only M-F 8am-6pm (Central Time)
+  let hours = 0
+  const current = new Date(start)
+
+  while (current < end) {
+    const day = current.getDay() // 0=Sun, 6=Sat
+    const hour = current.getHours()
+
+    if (day >= 1 && day <= 5 && hour >= 8 && hour < 18) {
+      hours++
+    }
+    current.setTime(current.getTime() + 60 * 60 * 1000) // add 1 hour
+  }
+  return hours
+}
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ locationId: string }> }
@@ -121,23 +138,25 @@ export async function GET(
     .gte('created_at', prevStartDate.toISOString())
     .lt('created_at', startDate.toISOString())
 
-  // === 6. Call tracking (current period) ===
+  // === 6. Call tracking — ONLY actual calls (activity_type = 'call') ===
   const { data: calls } = await supabase
     .from('call_tracking_records')
-    .select('call_type, call_start, duration_seconds')
+    .select('call_type, call_start, duration_seconds, direction, caller_number, source, activity_type')
     .eq('location_id', locationId)
+    .eq('activity_type', 'call')
     .gte('call_start', startDate.toISOString())
     .lte('call_start', endDate.toISOString())
 
+  const callsArr = calls || []
   const callSummary = {
-    total: (calls || []).length,
-    answered: (calls || []).filter((c: any) => c.call_type === 'answered').length,
-    missed: (calls || []).filter((c: any) => c.call_type === 'missed').length,
-    voicemail: (calls || []).filter((c: any) => c.call_type === 'voicemail').length,
+    total: callsArr.length,
+    answered: callsArr.filter((c: any) => c.call_type === 'answered').length,
+    missed: callsArr.filter((c: any) => c.call_type === 'missed').length,
+    voicemail: callsArr.filter((c: any) => c.call_type === 'voicemail').length,
     avg_duration: 0,
     answer_rate: '0.0',
   }
-  const answeredCalls = (calls || []).filter((c: any) => c.call_type === 'answered')
+  const answeredCalls = callsArr.filter((c: any) => c.call_type === 'answered')
   if (answeredCalls.length > 0) {
     callSummary.avg_duration = Math.round(
       answeredCalls.reduce((sum: number, c: any) => sum + (c.duration_seconds || 0), 0) / answeredCalls.length
@@ -147,13 +166,101 @@ export async function GET(
     callSummary.answer_rate = ((callSummary.answered / callSummary.total) * 100).toFixed(1)
   }
 
-  // Calls by hour
+  // Calls by hour (only actual calls)
   const callsByHour: number[] = new Array(24).fill(0)
   const missedByHour: number[] = new Array(24).fill(0)
-  for (const call of (calls || [])) {
+  for (const call of callsArr) {
     const hour = new Date((call as any).call_start).getHours()
     callsByHour[hour]++
     if ((call as any).call_type === 'missed') missedByHour[hour]++
+  }
+
+  // === 6b. SMS summary ===
+  const { data: smsRecords } = await supabase
+    .from('call_tracking_records')
+    .select('direction')
+    .eq('location_id', locationId)
+    .eq('activity_type', 'text')
+    .gte('call_start', startDate.toISOString())
+    .lte('call_start', endDate.toISOString())
+
+  const smsArr = smsRecords || []
+  const smsSummary = {
+    total: smsArr.length,
+    inbound: smsArr.filter((s: any) => s.direction === 'inbound').length,
+    outbound: smsArr.filter((s: any) => s.direction === 'outbound').length,
+  }
+
+  // === 6c. Callback tracking ===
+  // Get missed inbound calls
+  const missedInbound = callsArr.filter(
+    (c: any) => c.call_type === 'missed' && c.direction === 'inbound'
+  )
+
+  // Get all outbound calls (current period + 2 day buffer after)
+  const bufferEnd = new Date(endDate)
+  bufferEnd.setDate(bufferEnd.getDate() + 2)
+  const { data: outboundCalls } = await supabase
+    .from('call_tracking_records')
+    .select('caller_number, call_start')
+    .eq('location_id', locationId)
+    .eq('activity_type', 'call')
+    .eq('direction', 'outbound')
+    .gte('call_start', startDate.toISOString())
+
+  const outboundArr = outboundCalls || []
+
+  // Match missed calls with subsequent outbound calls to same number
+  const now = new Date()
+  const unreturnedCalls: any[] = []
+  let totalCallbackHours = 0
+  let returnedCount = 0
+
+  for (const missed of missedInbound) {
+    const missedTime = new Date((missed as any).call_start)
+    const callerNum = (missed as any).caller_number
+
+    if (!callerNum) continue
+
+    // Find first outbound call to same number AFTER this missed call
+    const callback = outboundArr.find((o: any) => {
+      const outTime = new Date(o.call_start)
+      return o.caller_number === callerNum && outTime > missedTime
+    })
+
+    if (callback) {
+      const callbackTime = new Date((callback as any).call_start)
+      const bh = businessHoursBetween(missedTime, callbackTime)
+      totalCallbackHours += bh
+      returnedCount++
+    } else {
+      const hoursWaiting = businessHoursBetween(missedTime, now)
+      unreturnedCalls.push({
+        caller_number: callerNum,
+        called_at: (missed as any).call_start,
+        source: (missed as any).source || null,
+        hours_waiting: hoursWaiting,
+      })
+    }
+  }
+
+  // Deduplicate unreturned by caller_number (keep the most recent)
+  const seenNumbers = new Set<string>()
+  const dedupedUnreturned = unreturnedCalls
+    .sort((a, b) => new Date(b.called_at).getTime() - new Date(a.called_at).getTime())
+    .filter((c) => {
+      if (seenNumbers.has(c.caller_number)) return false
+      seenNumbers.add(c.caller_number)
+      return true
+    })
+
+  const totalMissedInbound = missedInbound.length
+  const callbacks = {
+    unreturned_calls: dedupedUnreturned,
+    unreturned_count: dedupedUnreturned.length,
+    avg_callback_time_hours: returnedCount > 0 ? Math.round((totalCallbackHours / returnedCount) * 10) / 10 : 0,
+    callback_rate: totalMissedInbound > 0 ? Math.round((returnedCount / totalMissedInbound) * 1000) / 10 : 100,
+    returned_count: returnedCount,
   }
 
   // === 7. GBP summary ===
@@ -208,6 +315,8 @@ export async function GET(
     call_summary: callSummary,
     calls_by_hour: callsByHour,
     missed_by_hour: missedByHour,
+    sms_summary: smsSummary,
+    callbacks,
     gbp: latestGbp?.[0] || null,
     recent_reviews: recentReviews || [],
     period: { start: startStr, end: endStr, days },
