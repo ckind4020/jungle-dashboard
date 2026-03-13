@@ -2,7 +2,8 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { Phone, Mail, Clock, CheckCircle2, XCircle, Eye, ChevronDown, ChevronUp, AlarmClock, Lightbulb } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { Phone, Mail, Clock, CheckCircle2, XCircle, Eye, ChevronDown, ChevronUp, AlarmClock, Lightbulb, UserPlus, Headphones } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import OverdueBadge from './OverdueBadge'
 import { formatDistanceToNow } from 'date-fns'
@@ -88,9 +89,34 @@ function getCardStyle(item: ActionItemData) {
   return styles[item.priority] || styles.medium
 }
 
+/** Collect all recording URLs from data_context */
+function getRecordingUrls(dataContext: any): string[] {
+  if (!dataContext) return []
+  const urls: string[] = []
+
+  // Direct recording_url
+  if (dataContext.recording_url) {
+    urls.push(dataContext.recording_url)
+  }
+
+  // Consolidated call_records
+  if (Array.isArray(dataContext.call_records)) {
+    for (const rec of dataContext.call_records) {
+      if (rec.recording_url) {
+        urls.push(rec.recording_url)
+      }
+    }
+  }
+
+  return urls
+}
+
 export default function ActionItemCard({ item, onAction }: ActionItemCardProps) {
   const [expanded, setExpanded] = useState(false)
   const [acting, setActing] = useState(false)
+  const [creatingLead, setCreatingLead] = useState(false)
+  const [createLeadError, setCreateLeadError] = useState<string | null>(null)
+  const router = useRouter()
   const style = getCardStyle(item)
 
   const handleAction = async (action: string) => {
@@ -98,6 +124,79 @@ export default function ActionItemCard({ item, onAction }: ActionItemCardProps) 
     await onAction(item.id, action)
     setActing(false)
   }
+
+  const handleCreateLead = async () => {
+    const ctx = item.data_context
+    if (!ctx) return
+
+    const callerName = ctx.ctm_caller_name || ''
+    const spaceIdx = callerName.indexOf(' ')
+    const firstName = spaceIdx > 0 ? callerName.slice(0, spaceIdx) : callerName
+    const lastName = spaceIdx > 0 ? callerName.slice(spaceIdx + 1) : ''
+
+    const notes = ctx.call_summary || item.description
+
+    setCreatingLead(true)
+    setCreateLeadError(null)
+
+    try {
+      // 1. Create lead
+      const leadRes = await fetch('/api/leads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          location_id: item.location_id,
+          first_name: firstName || 'Unknown',
+          last_name: lastName || 'Caller',
+          phone: ctx.caller_number || null,
+          email: ctx.ctm_email || null,
+          source: 'phone_call',
+          notes,
+        }),
+      })
+
+      if (leadRes.status === 409) {
+        const dupData = await leadRes.json()
+        const dup = dupData.duplicates?.[0]
+        if (dup) {
+          // Duplicate found — resolve action item linking to existing lead, then navigate
+          await fetch('/api/actions', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: item.id, action: 'resolve_with_lead', lead_id: dup.id }),
+          })
+          router.push(`/leads/${item.location_id}/${dup.id}`)
+          return
+        }
+      }
+
+      if (!leadRes.ok) {
+        const errData = await leadRes.json()
+        throw new Error(errData.error || 'Failed to create lead')
+      }
+
+      const lead = await leadRes.json()
+
+      // 2. Resolve the action item with the new lead_id
+      await fetch('/api/actions', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, action: 'resolve_with_lead', lead_id: lead.id }),
+      })
+
+      // 3. Navigate to the new lead
+      router.push(`/leads/${item.location_id}/${lead.id}`)
+    } catch (err: any) {
+      setCreateLeadError(err.message || 'Failed to create lead')
+    } finally {
+      setCreatingLead(false)
+    }
+  }
+
+  const recordingUrls = getRecordingUrls(item.data_context)
+  const showCreateLead = item.action_type === 'create_lead' &&
+    item.data_context &&
+    (item.data_context.ctm_caller_name || item.data_context.caller_number)
 
   return (
     <div className={cn('rounded-lg shadow-sm border border-gray-200 overflow-hidden', style.border, style.bg)}>
@@ -175,6 +274,24 @@ export default function ActionItemCard({ item, onAction }: ActionItemCardProps) 
           </div>
         )}
 
+        {/* Recording Links */}
+        {recordingUrls.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap mb-3">
+            {recordingUrls.map((url, i) => (
+              <a
+                key={i}
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 transition-colors"
+              >
+                <Headphones className="w-3.5 h-3.5" />
+                {recordingUrls.length > 1 ? `Listen to Recording ${i + 1}` : 'Listen to Recording'}
+              </a>
+            ))}
+          </div>
+        )}
+
         {/* AI Suggestion */}
         {item.ai_suggestion && (
           <div className="bg-amber-50/60 border border-amber-200/50 rounded-lg p-3 mb-3">
@@ -195,8 +312,27 @@ export default function ActionItemCard({ item, onAction }: ActionItemCardProps) 
           </div>
         )}
 
+        {/* Create Lead Error */}
+        {createLeadError && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-2 mb-3">
+            <p className="text-xs text-red-700">{createLeadError}</p>
+          </div>
+        )}
+
         {/* Action Buttons */}
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Create Lead button for create_lead action items */}
+          {showCreateLead && (
+            <button
+              onClick={handleCreateLead}
+              disabled={creatingLead || acting}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-semibold bg-green-600 text-white hover:bg-green-700 transition-colors disabled:opacity-50 shadow-sm"
+            >
+              <UserPlus className="w-4 h-4" />
+              {creatingLead ? 'Creating...' : 'Create Lead'}
+            </button>
+          )}
+
           {item.action_type === 'call_back' && (
             <>
               {item.lead?.phone && (
@@ -309,7 +445,51 @@ export default function ActionItemCard({ item, onAction }: ActionItemCardProps) 
             </>
           )}
 
-          {(item.action_type === 'general' || !['call_back', 'send_email', 'follow_up'].includes(item.action_type)) && (
+          {item.action_type === 'create_lead' && !showCreateLead && (
+            <>
+              {item.status === 'open' && (
+                <button
+                  onClick={() => handleAction('in_progress')}
+                  disabled={acting}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                  Mark In Progress
+                </button>
+              )}
+              <button
+                onClick={() => handleAction('complete')}
+                disabled={acting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition-colors disabled:opacity-50"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Done
+              </button>
+              <button
+                onClick={() => handleAction('skip')}
+                disabled={acting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors disabled:opacity-50"
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                Dismiss
+              </button>
+            </>
+          )}
+
+          {item.action_type === 'create_lead' && showCreateLead && (
+            <>
+              <button
+                onClick={() => handleAction('skip')}
+                disabled={acting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors disabled:opacity-50"
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                Dismiss
+              </button>
+            </>
+          )}
+
+          {(item.action_type === 'general' || !['call_back', 'send_email', 'follow_up', 'create_lead'].includes(item.action_type)) && (
             <>
               {item.status === 'open' && (
                 <button

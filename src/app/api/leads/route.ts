@@ -114,6 +114,7 @@ export async function POST(request: Request) {
       email: body.email?.trim() || null,
       phone: body.phone?.trim() || null,
       source: body.source || 'manual_entry',
+      notes: body.notes || null,
       stage_id: newStage?.id || null,
       score: body.score || 0,
       utm_source: body.utm_source || null,

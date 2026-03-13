@@ -224,6 +224,16 @@ export async function PATCH(request: Request) {
       .from('action_items')
       .update({ status: 'dismissed', updated_at: now })
       .eq('id', id)
+  } else if (action === 'resolve_with_lead') {
+    // Resolve and link to a newly created lead
+    const { lead_id } = body
+    if (!lead_id) {
+      return NextResponse.json({ error: 'lead_id required for resolve_with_lead' }, { status: 400 })
+    }
+    await supabase
+      .from('action_items')
+      .update({ status: 'resolved', lead_id, updated_at: now })
+      .eq('id', id)
   } else if (action === 'in_progress') {
     await supabase
       .from('action_items')
