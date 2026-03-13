@@ -136,6 +136,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     'first_name', 'last_name', 'email', 'phone', 'stage_id',
     'score', 'is_archived', 'converted_at',
     'utm_source', 'utm_medium', 'utm_campaign',
+    'follow_up_date', 'follow_up_type', 'follow_up_notes',
+    'last_contact_at', 'last_contact_type',
   ]
 
   const updates: Record<string, any> = {}

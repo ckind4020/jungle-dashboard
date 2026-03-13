@@ -10,6 +10,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { ErrorState } from '@/components/ui/ErrorState'
 import StageDropdown from '@/components/leads/StageDropdown'
 import ActivityTimeline from '@/components/leads/ActivityTimeline'
+import FollowUpSection from '@/components/leads/FollowUpSection'
 import { formatDistanceToNow, format } from 'date-fns'
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -249,6 +250,17 @@ export default function LeadDetailPage({ params }: { params: Promise<{ locationI
               </div>
             )}
           </div>
+
+          {/* Follow-up Section */}
+          <FollowUpSection
+            leadId={leadId}
+            followUpDate={lead.follow_up_date || null}
+            followUpType={lead.follow_up_type || null}
+            followUpNotes={lead.follow_up_notes || null}
+            lastContactAt={lead.last_contact_at || null}
+            lastContactType={lead.last_contact_type || null}
+            onSaved={fetchData}
+          />
         </div>
 
         {/* Right column — Activity Timeline */}

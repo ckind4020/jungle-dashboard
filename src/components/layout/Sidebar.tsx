@@ -16,6 +16,7 @@ interface ActionSummary {
   total: number
   critical: number
   high: number
+  overdue_count: number
 }
 
 const navItems = [
@@ -56,6 +57,7 @@ export default function Sidebar() {
             total: data.summary.total,
             critical: data.summary.critical,
             high: data.summary.high,
+            overdue_count: data.summary.overdue_count || 0,
           })
         }
       })
@@ -69,6 +71,7 @@ export default function Sidebar() {
 
   const getBadgeColor = () => {
     if (!actionSummary || actionSummary.total === 0) return ''
+    if (actionSummary.overdue_count > 0) return 'bg-red-500'
     if (actionSummary.critical > 0) return 'bg-red-500'
     if (actionSummary.high > 0) return 'bg-orange-500'
     return 'bg-yellow-500'

@@ -349,6 +349,11 @@ export interface Lead {
   utm_source: string | null
   utm_medium: string | null
   utm_campaign: string | null
+  follow_up_date: string | null
+  follow_up_type: string | null
+  follow_up_notes: string | null
+  last_contact_at: string | null
+  last_contact_type: string | null
   created_at: string
   updated_at: string
   lead_stages?: LeadStage
