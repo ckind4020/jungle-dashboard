@@ -83,6 +83,23 @@ async function matchCaller(supabase: any, locationId: string, callerNumber: stri
   return { type: 'unknown' as const, match: null }
 }
 
+// ─── Description helpers ───
+
+function buildCallerLabel(
+  callerNumber: string,
+  ctmCallerName: string | null,
+  ctmSource: string | null
+): string {
+  const name = ctmCallerName || formatPhone(callerNumber)
+  const via = ctmSource ? ` via ${ctmSource}` : ''
+  return `${name}${via}`
+}
+
+function appendSummary(description: string, summary: string | null): string {
+  if (!summary) return description
+  return `${description}\n\nSummary: ${summary}`
+}
+
 // ─── Action item creation / update with phone-based dedup ───
 
 async function findExistingActionByPhone(
@@ -225,6 +242,10 @@ export async function GET(request: Request) {
         callerState: string | null
         callRecordId: string | null
         match: Awaited<ReturnType<typeof matchCaller>>
+        ctmCallerName: string | null
+        ctmEmail: string | null
+        ctmSource: string | null
+        callSummary: string | null
       }
 
       const callsByPhone = new Map<string, ProcessedCall[]>()
@@ -241,6 +262,11 @@ export async function GET(request: Request) {
         const recordingUrl = ctmCall.audio || ctmCall.recording_url || null
         const callerCity = ctmCall.city || null
         const callerState = ctmCall.state || null
+        const ctmCallerName = ctmCall.name || null
+        const ctmEmail = ctmCall.email || null
+        const ctmSource = ctmCall.source || null
+        const callSummary = ctmCall.summary || null
+        const transcriptionText = ctmCall.transcription_text || null
 
         // Ensure call record exists in call_tracking_records
         const externalId = String(ctmCall.id)
@@ -254,6 +280,18 @@ export async function GET(request: Request) {
 
         if (existingRecord) {
           callRecordId = existingRecord.id
+          // Update existing record with new CTM fields if available
+          const updateFields: Record<string, any> = {}
+          if (callSummary) updateFields.call_summary = callSummary
+          if (transcriptionText) updateFields.transcription_text = transcriptionText
+          if (ctmCallerName) updateFields.ctm_caller_name = ctmCallerName
+          if (ctmSource) updateFields.ctm_source = ctmSource
+          if (Object.keys(updateFields).length > 0) {
+            await supabase
+              .from('call_tracking_records')
+              .update(updateFields)
+              .eq('id', existingRecord.id)
+          }
         } else {
           const { data: newRecord } = await supabase
             .from('call_tracking_records')
@@ -272,6 +310,10 @@ export async function GET(request: Request) {
               recording_url: recordingUrl,
               caller_city: callerCity,
               caller_state: callerState,
+              call_summary: callSummary,
+              transcription_text: transcriptionText,
+              ctm_caller_name: ctmCallerName,
+              ctm_source: ctmSource,
             })
             .select('id')
             .single()
@@ -295,7 +337,8 @@ export async function GET(request: Request) {
         const processed: ProcessedCall = {
           callerNumber, direction, callType, callStart,
           duration, recordingUrl, callerCity, callerState,
-          callRecordId, match,
+          callRecordId, match, ctmCallerName, ctmEmail,
+          ctmSource, callSummary,
         }
 
         if (!callsByPhone.has(normalizedPhone)) {
@@ -315,6 +358,13 @@ export async function GET(request: Request) {
         const callerCity = firstCall.callerCity
         const callerState = firstCall.callerState
         const match = firstCall.match
+
+        // Extract CTM enrichment from most recent call (prefer non-null values)
+        const ctmCallerName = [...calls].reverse().find(c => c.ctmCallerName)?.ctmCallerName || null
+        const ctmEmail = [...calls].reverse().find(c => c.ctmEmail)?.ctmEmail || null
+        const ctmSource = [...calls].reverse().find(c => c.ctmSource)?.ctmSource || null
+        const latestSummary = [...calls].reverse().find(c => c.callSummary)?.callSummary || null
+        const callerLabel = buildCallerLabel(callerNumber, ctmCallerName, ctmSource)
 
         // Separate by type
         const missedOrVmCalls = calls.filter(c => c.callType === 'missed' || c.callType === 'voicemail')
@@ -353,17 +403,22 @@ export async function GET(request: Request) {
                 recording_url: c.recordingUrl,
               }))
 
+              const hasContactInfo = !!(ctmCallerName || ctmEmail)
+              const contactNote = hasContactInfo ? ' AI concierge collected contact info.' : ''
+
+              const baseDesc = totalCount > 1
+                ? `${callerLabel} called${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. Called at ${callTimesDesc}. ${Math.round(totalDuration / 60)} total minutes \u2014 if interested, create a lead.${contactNote}`
+                : `${callerLabel} called${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. ${Math.round(totalDuration / 60)} minute conversation \u2014 if interested, create a lead.${contactNote}`
+
               const result = await upsertConsolidatedAction(supabase, existing?.id || null, {
                 organization_id: ORG_ID,
                 location_id: location.id,
                 action_type: 'create_lead',
                 priority: totalCount >= 2 ? 'critical' : 'high',
                 title: totalCount > 1
-                  ? `Call back ${formatPhone(callerNumber)} \u2014 called ${totalCount} times today`
-                  : `New caller from ${formatPhone(callerNumber)} \u2014 ${Math.round(totalDuration / 60)}min call`,
-                description: totalCount > 1
-                  ? `Unknown caller${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. Called at ${callTimesDesc}. ${Math.round(totalDuration / 60)} total minutes \u2014 if interested, create a lead.`
-                  : `Unknown caller${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. ${Math.round(totalDuration / 60)} minute conversation \u2014 if interested, create a lead.`,
+                  ? `Call back ${ctmCallerName || formatPhone(callerNumber)} \u2014 called ${totalCount} times today`
+                  : `New caller ${ctmCallerName || formatPhone(callerNumber)} \u2014 ${Math.round(totalDuration / 60)}min call`,
+                description: appendSummary(baseDesc, latestSummary),
                 recommended_action:
                   'If this was a prospective student, create a lead and schedule a follow-up.',
                 ai_suggestion: totalCount >= 2
@@ -375,6 +430,9 @@ export async function GET(request: Request) {
                   caller_number: callerNumber,
                   caller_city: callerCity,
                   caller_state: callerState,
+                  ctm_caller_name: ctmCallerName,
+                  ctm_email: ctmEmail,
+                  ctm_source: ctmSource,
                   call_count: totalCount,
                   call_records: [
                     ...(existing?.data_context?.call_records || []),
@@ -422,6 +480,10 @@ export async function GET(request: Request) {
           const totalCount = prevCount + callCount
           const totalPriority = totalCount >= 2 ? 'critical' : 'high'
 
+          const baseDesc = totalCount > 1
+            ? `${lead.source ? prettifySource(lead.source) + ' lead' : 'Lead'}. ${callerLabel} called at ${callTimesDesc}.${hasVoicemail ? ' Left a voicemail \u2014 listen and call back.' : ''}`
+            : `${lead.source ? prettifySource(lead.source) + ' lead' : 'Lead'}. ${callerLabel} called. ${hasVoicemail ? 'They left a voicemail \u2014 listen and call back.' : 'They called and you missed it.'}`
+
           const result = await upsertConsolidatedAction(supabase, existing?.id || null, {
             organization_id: ORG_ID,
             location_id: location.id,
@@ -431,9 +493,7 @@ export async function GET(request: Request) {
             title: totalCount > 1
               ? `Call back ${lead.first_name} ${lead.last_name} \u2014 called ${totalCount} times`
               : `Call back ${lead.first_name} ${lead.last_name} \u2014 ${hasVoicemail ? 'left voicemail' : 'missed call'} at ${formatTime(lastCall.callStart)}`,
-            description: totalCount > 1
-              ? `${lead.source ? prettifySource(lead.source) + ' lead' : 'Lead'}. Called at ${callTimesDesc}.${hasVoicemail ? ' Left a voicemail \u2014 listen and call back.' : ''}`
-              : `${lead.source ? prettifySource(lead.source) + ' lead' : 'Lead'}. ${hasVoicemail ? 'They left a voicemail \u2014 listen and call back.' : 'They called and you missed it.'}`,
+            description: appendSummary(baseDesc, latestSummary),
             recommended_action: `Call ${lead.first_name} back at ${formatPhone(callerNumber)}.${hasVoicemail && voicemailRecording ? ' Listen to voicemail first.' : ''}`,
             ai_suggestion: totalCount >= 2
               ? `Called ${totalCount} times \u2014 they clearly need to reach you. Call back immediately.`
@@ -444,6 +504,8 @@ export async function GET(request: Request) {
               caller_number: callerNumber,
               lead_name: `${lead.first_name} ${lead.last_name}`,
               lead_source: lead.source,
+              ctm_caller_name: ctmCallerName,
+              ctm_source: ctmSource,
               recording_url: voicemailRecording,
               has_voicemail: hasVoicemail,
               call_count: totalCount,
@@ -467,6 +529,10 @@ export async function GET(request: Request) {
           const totalCount = prevCount + callCount
           const totalPriority = totalCount >= 2 ? 'critical' : 'medium'
 
+          const baseDesc = totalCount > 1
+            ? `Existing student. ${callerLabel} called at ${callTimesDesc}.${hasVoicemail ? ' Left a voicemail.' : ''} May need to reschedule or has a question.`
+            : `Existing student. ${callerLabel} called. ${hasVoicemail ? 'Left a voicemail.' : 'Missed their call.'} May need to reschedule or has a question.`
+
           const result = await upsertConsolidatedAction(supabase, existing?.id || null, {
             organization_id: ORG_ID,
             location_id: location.id,
@@ -475,15 +541,15 @@ export async function GET(request: Request) {
             title: totalCount > 1
               ? `Call back ${student.first_name} ${student.last_name} (student) \u2014 called ${totalCount} times`
               : `Call back ${student.first_name} ${student.last_name} (student) \u2014 ${hasVoicemail ? 'voicemail' : 'missed'} at ${formatTime(lastCall.callStart)}`,
-            description: totalCount > 1
-              ? `Existing student. Called at ${callTimesDesc}.${hasVoicemail ? ' Left a voicemail.' : ''} May need to reschedule or has a question.`
-              : `Existing student. ${hasVoicemail ? 'Left a voicemail.' : 'Missed their call.'} May need to reschedule or has a question.`,
+            description: appendSummary(baseDesc, latestSummary),
             recommended_action: `Call ${student.first_name} back at ${formatPhone(callerNumber)}.`,
             call_record_id: mostRecentCallRecordId,
             source_engine: 'call_matcher',
             data_context: {
               caller_number: callerNumber,
               student_name: `${student.first_name} ${student.last_name}`,
+              ctm_caller_name: ctmCallerName,
+              ctm_source: ctmSource,
               recording_url: voicemailRecording,
               has_voicemail: hasVoicemail,
               call_count: totalCount,
@@ -507,18 +573,23 @@ export async function GET(request: Request) {
           const totalCount = prevCount + callCount
           const totalPriority = totalCount >= 2 ? 'critical' : (hasVoicemail ? 'high' : 'medium')
 
+          const hasContactInfo = !!(ctmCallerName || ctmEmail)
+          const contactNote = hasContactInfo ? ' AI concierge collected contact info.' : ''
+
+          const baseDesc = totalCount > 1
+            ? `${callerLabel} called${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. Called at ${callTimesDesc}.${hasVoicemail ? ' Left a voicemail \u2014 listen and call back.' : ''}${contactNote}`
+            : `${callerLabel} called${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. ${hasVoicemail ? 'Left a voicemail \u2014 listen and call back.' : 'Consider calling back.'}${contactNote}`
+
           const result = await upsertConsolidatedAction(supabase, existing?.id || null, {
             organization_id: ORG_ID,
             location_id: location.id,
             action_type: actionType,
             priority: totalPriority,
             title: totalCount > 1
-              ? `Call back ${formatPhone(callerNumber)} \u2014 called ${totalCount} times`
-              : `${hasVoicemail ? 'Voicemail' : 'Missed call'} from ${formatPhone(callerNumber)} \u2014 not in system`,
-            description: totalCount > 1
-              ? `Unknown caller${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. Called at ${callTimesDesc}.${hasVoicemail ? ' Left a voicemail \u2014 listen and call back.' : ''}`
-              : `Unknown caller${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. ${hasVoicemail ? 'Left a voicemail \u2014 listen and call back.' : 'Consider calling back.'}`,
-            recommended_action: `Call ${formatPhone(callerNumber)} back.${hasVoicemail && voicemailRecording ? ' Listen to voicemail first.' : ''} If interested, create a lead.`,
+              ? `Call back ${ctmCallerName || formatPhone(callerNumber)} \u2014 called ${totalCount} times`
+              : `${hasVoicemail ? 'Voicemail' : 'Missed call'} from ${ctmCallerName || formatPhone(callerNumber)} \u2014 not in system`,
+            description: appendSummary(baseDesc, latestSummary),
+            recommended_action: `Call ${ctmCallerName || formatPhone(callerNumber)} back.${hasVoicemail && voicemailRecording ? ' Listen to voicemail first.' : ''} If interested, create a lead.`,
             ai_suggestion: totalCount >= 2
               ? `Called ${totalCount} times \u2014 clearly trying to reach you. High chance of being a real prospect.`
               : hasVoicemail
@@ -530,6 +601,9 @@ export async function GET(request: Request) {
               caller_number: callerNumber,
               caller_city: callerCity,
               caller_state: callerState,
+              ctm_caller_name: ctmCallerName,
+              ctm_email: ctmEmail,
+              ctm_source: ctmSource,
               recording_url: voicemailRecording,
               has_voicemail: hasVoicemail,
               call_count: totalCount,

@@ -35,6 +35,10 @@ export interface CTMCall {
   source?: string
   city?: string
   state?: string
+  summary?: string
+  transcription_text?: string
+  name?: string
+  email?: string
 }
 
 export function getCTMCredentials(locationNumber: string): CTMCredentials | null {
