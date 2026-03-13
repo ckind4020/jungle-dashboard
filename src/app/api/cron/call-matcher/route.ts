@@ -83,16 +83,56 @@ async function matchCaller(supabase: any, locationId: string, callerNumber: stri
   return { type: 'unknown' as const, match: null }
 }
 
-// ─── Action item creation with dedup ───
+// ─── Action item creation / update with phone-based dedup ───
 
-async function createActionItem(supabase: any, item: any): Promise<boolean> {
-  if (item.call_record_id) {
-    const { data: existing } = await supabase
+async function findExistingActionByPhone(
+  supabase: any,
+  locationId: string,
+  callerPhone: string,
+  actionType: string
+): Promise<any | null> {
+  const { data: openItems } = await supabase
+    .from('action_items')
+    .select('id, title, description, data_context, priority')
+    .eq('location_id', locationId)
+    .eq('action_type', actionType)
+    .in('status', ['open', 'in_progress'])
+    .not('data_context', 'is', null)
+
+  if (!openItems) return null
+
+  const normalized = normalizePhone(callerPhone)
+  return openItems.find((item: any) => {
+    const ctx = item.data_context
+    if (!ctx?.caller_number) return false
+    return normalizePhone(ctx.caller_number) === normalized
+  }) || null
+}
+
+async function upsertConsolidatedAction(
+  supabase: any,
+  existingId: string | null,
+  item: any
+): Promise<'created' | 'updated' | false> {
+  if (existingId) {
+    const { error } = await supabase
       .from('action_items')
-      .select('id')
-      .eq('call_record_id', item.call_record_id)
-      .maybeSingle()
-    if (existing) return false
+      .update({
+        title: item.title,
+        description: item.description,
+        priority: item.priority,
+        recommended_action: item.recommended_action,
+        ai_suggestion: item.ai_suggestion,
+        call_record_id: item.call_record_id,
+        data_context: item.data_context,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existingId)
+    if (error) {
+      console.error('Failed to update action item:', error)
+      return false
+    }
+    return 'updated'
   }
 
   const expiresAt = new Date()
@@ -111,7 +151,7 @@ async function createActionItem(supabase: any, item: any): Promise<boolean> {
     console.error('Failed to create action item:', error)
     return false
   }
-  return true
+  return 'created'
 }
 
 async function updateLeadContact(
@@ -170,10 +210,26 @@ export async function GET(request: Request) {
       const ctmCalls = await fetchCTMCalls(creds, lastSyncAt, { maxPages: 3 })
 
       let actionsCreated = 0
+      let actionsUpdated = 0
       let leadsUpdated = 0
 
+      // ── Pass 1: Process calls, upsert records, group by caller phone ──
+      interface ProcessedCall {
+        callerNumber: string
+        direction: string
+        callType: string
+        callStart: string
+        duration: number
+        recordingUrl: string | null
+        callerCity: string | null
+        callerState: string | null
+        callRecordId: string | null
+        match: Awaited<ReturnType<typeof matchCaller>>
+      }
+
+      const callsByPhone = new Map<string, ProcessedCall[]>()
+
       for (const ctmCall of ctmCalls) {
-        // Only process actual calls
         const activityType = getActivityType(ctmCall)
         if (activityType !== 'call') continue
 
@@ -225,7 +281,7 @@ export async function GET(request: Request) {
         // Match caller against leads/students
         const match = await matchCaller(supabase, location.id, callerNumber)
 
-        // ── Outbound calls: update lead contact only, no action items ──
+        // Outbound calls: update lead contact only, no action items
         if (direction === 'outbound') {
           if (match.type === 'lead' && match.match) {
             await updateLeadContact(supabase, match.match.id, callStart, 'call_outbound')
@@ -234,121 +290,257 @@ export async function GET(request: Request) {
           continue
         }
 
-        // ── Inbound answered calls ──
-        if (callType === 'answered') {
-          if (match.type === 'lead' && match.match) {
-            await updateLeadContact(supabase, match.match.id, callStart, 'call_inbound')
-            leadsUpdated++
-          } else if (match.type === 'unknown' && duration > 60) {
-            const created = await createActionItem(supabase, {
-              organization_id: ORG_ID,
-              location_id: location.id,
-              action_type: 'create_lead',
-              priority: 'low',
-              title: `New caller from ${formatPhone(callerNumber)} \u2014 ${Math.round(duration / 60)}min call`,
-              description: `Unknown caller${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. ${Math.round(duration / 60)} minute conversation \u2014 if interested, create a lead.`,
-              recommended_action:
-                'If this was a prospective student, create a lead and schedule a follow-up.',
-              ai_suggestion: `${Math.round(duration / 60)}-minute call suggests genuine interest. Consider creating a lead.`,
-              call_record_id: callRecordId,
-              source_engine: 'call_matcher',
-              data_context: {
-                caller_number: callerNumber,
-                caller_city: callerCity,
-                caller_state: callerState,
-                duration,
-                recording_url: recordingUrl,
-              },
-            })
-            if (created) actionsCreated++
-          }
-          // Short answered calls from unknowns — skip (likely wrong numbers)
+        // Group inbound calls by normalized phone
+        const normalizedPhone = normalizePhone(callerNumber)
+        const processed: ProcessedCall = {
+          callerNumber, direction, callType, callStart,
+          duration, recordingUrl, callerCity, callerState,
+          callRecordId, match,
         }
 
-        // ── Inbound missed / voicemail calls ──
-        if (callType === 'missed' || callType === 'voicemail') {
-          const isVoicemail = callType === 'voicemail'
+        if (!callsByPhone.has(normalizedPhone)) {
+          callsByPhone.set(normalizedPhone, [])
+        }
+        callsByPhone.get(normalizedPhone)!.push(processed)
+      }
 
+      // ── Pass 2: Create/update consolidated action items per caller ──
+      for (const [, calls] of callsByPhone) {
+        // Sort calls chronologically
+        calls.sort((a, b) => new Date(a.callStart).getTime() - new Date(b.callStart).getTime())
+
+        const firstCall = calls[0]
+        const lastCall = calls[calls.length - 1]
+        const callerNumber = firstCall.callerNumber
+        const callerCity = firstCall.callerCity
+        const callerState = firstCall.callerState
+        const match = firstCall.match
+
+        // Separate by type
+        const missedOrVmCalls = calls.filter(c => c.callType === 'missed' || c.callType === 'voicemail')
+        const answeredCalls = calls.filter(c => c.callType === 'answered')
+
+        // ── Handle answered calls (update lead contact) ──
+        if (answeredCalls.length > 0) {
           if (match.type === 'lead' && match.match) {
-            const lead = match.match
-            // Check if there's already an open call_back for this lead
-            const { data: existingAction } = await supabase
-              .from('action_items')
-              .select('id')
-              .eq('lead_id', lead.id)
-              .eq('action_type', 'call_back')
-              .in('status', ['open', 'in_progress'])
-              .maybeSingle()
+            const latest = answeredCalls[answeredCalls.length - 1]
+            await updateLeadContact(supabase, match.match.id, latest.callStart, 'call_inbound')
+            leadsUpdated++
+          } else if (match.type === 'unknown') {
+            // Consolidate long answered calls from unknowns
+            const longCalls = answeredCalls.filter(c => c.duration > 60)
+            if (longCalls.length > 0) {
+              const totalDuration = longCalls.reduce((sum, c) => sum + c.duration, 0)
+              const callCount = longCalls.length
+              const mostRecentCall = longCalls[longCalls.length - 1]
 
-            if (!existingAction) {
-              const created = await createActionItem(supabase, {
+              const callTimesDesc = longCalls
+                .map(c => `${formatTime(c.callStart)} (${Math.round(c.duration / 60)}min)`)
+                .join(', ')
+
+              const existing = await findExistingActionByPhone(
+                supabase, location.id, callerNumber, 'create_lead'
+              )
+
+              const prevCount = existing?.data_context?.call_count || 0
+              const totalCount = prevCount + callCount
+
+              const callRecords = longCalls.map(c => ({
+                call_record_id: c.callRecordId,
+                call_start: c.callStart,
+                call_type: c.callType,
+                duration: c.duration,
+                recording_url: c.recordingUrl,
+              }))
+
+              const result = await upsertConsolidatedAction(supabase, existing?.id || null, {
                 organization_id: ORG_ID,
                 location_id: location.id,
-                action_type: 'call_back',
-                lead_id: lead.id,
-                priority: 'high',
-                title: `Call back ${lead.first_name} ${lead.last_name} \u2014 ${isVoicemail ? 'left voicemail' : 'missed call'} at ${formatTime(callStart)}`,
-                description: `${lead.source ? prettifySource(lead.source) + ' lead' : 'Lead'}. ${isVoicemail ? 'They left a voicemail \u2014 listen and call back.' : 'They called and you missed it.'}`,
-                recommended_action: `Call ${lead.first_name} back at ${formatPhone(callerNumber)}.${isVoicemail && recordingUrl ? ' Listen to voicemail first.' : ''}`,
-                ai_suggestion:
-                  'They called YOU \u2014 this is the highest-intent signal. Call back within the hour.',
-                call_record_id: callRecordId,
+                action_type: 'create_lead',
+                priority: totalCount >= 2 ? 'critical' : 'high',
+                title: totalCount > 1
+                  ? `Call back ${formatPhone(callerNumber)} \u2014 called ${totalCount} times today`
+                  : `New caller from ${formatPhone(callerNumber)} \u2014 ${Math.round(totalDuration / 60)}min call`,
+                description: totalCount > 1
+                  ? `Unknown caller${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. Called at ${callTimesDesc}. ${Math.round(totalDuration / 60)} total minutes \u2014 if interested, create a lead.`
+                  : `Unknown caller${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. ${Math.round(totalDuration / 60)} minute conversation \u2014 if interested, create a lead.`,
+                recommended_action:
+                  'If this was a prospective student, create a lead and schedule a follow-up.',
+                ai_suggestion: totalCount >= 2
+                  ? `Called ${totalCount} times \u2014 clearly trying to reach you. High-priority callback.`
+                  : `${Math.round(totalDuration / 60)}-minute call suggests genuine interest. Consider creating a lead.`,
+                call_record_id: mostRecentCall.callRecordId,
                 source_engine: 'call_matcher',
                 data_context: {
                   caller_number: callerNumber,
-                  lead_name: `${lead.first_name} ${lead.last_name}`,
-                  lead_source: lead.source,
-                  recording_url: recordingUrl,
-                  is_voicemail: isVoicemail,
+                  caller_city: callerCity,
+                  caller_state: callerState,
+                  call_count: totalCount,
+                  call_records: [
+                    ...(existing?.data_context?.call_records || []),
+                    ...callRecords,
+                  ],
                 },
               })
-              if (created) actionsCreated++
+              if (result === 'created') actionsCreated++
+              else if (result === 'updated') actionsUpdated++
             }
-          } else if (match.type === 'student' && match.match) {
-            const student = match.match
-            const created = await createActionItem(supabase, {
-              organization_id: ORG_ID,
-              location_id: location.id,
-              action_type: 'call_back',
-              priority: 'medium',
-              title: `Call back ${student.first_name} ${student.last_name} (student) \u2014 ${isVoicemail ? 'voicemail' : 'missed'} at ${formatTime(callStart)}`,
-              description: `Existing student. ${isVoicemail ? 'Left a voicemail.' : 'Missed their call.'} May need to reschedule or has a question.`,
-              recommended_action: `Call ${student.first_name} back at ${formatPhone(callerNumber)}.`,
-              call_record_id: callRecordId,
-              source_engine: 'call_matcher',
-              data_context: {
-                caller_number: callerNumber,
-                student_name: `${student.first_name} ${student.last_name}`,
-                recording_url: recordingUrl,
-                is_voicemail: isVoicemail,
-              },
-            })
-            if (created) actionsCreated++
-          } else {
-            // Unknown caller missed/voicemail
-            const created = await createActionItem(supabase, {
-              organization_id: ORG_ID,
-              location_id: location.id,
-              action_type: 'create_lead',
-              priority: isVoicemail ? 'high' : 'medium',
-              title: `${isVoicemail ? 'Voicemail' : 'Missed call'} from ${formatPhone(callerNumber)} \u2014 not in system`,
-              description: `Unknown caller${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. ${isVoicemail ? 'Left a voicemail \u2014 listen and call back.' : 'Consider calling back.'}`,
-              recommended_action: `Call ${formatPhone(callerNumber)} back.${isVoicemail && recordingUrl ? ' Listen to voicemail first.' : ''} If interested, create a lead.`,
-              ai_suggestion: isVoicemail
+          }
+        }
+
+        // ── Handle missed / voicemail calls (consolidated) ──
+        if (missedOrVmCalls.length === 0) continue
+
+        const callCount = missedOrVmCalls.length
+        const hasVoicemail = missedOrVmCalls.some(c => c.callType === 'voicemail')
+        const voicemailRecording = missedOrVmCalls.find(c => c.callType === 'voicemail' && c.recordingUrl)?.recordingUrl || null
+        const mostRecentCallRecordId = missedOrVmCalls[missedOrVmCalls.length - 1].callRecordId
+
+        // Build call times description
+        const callTimesDesc = missedOrVmCalls
+          .map(c => `${formatTime(c.callStart)} (${c.callType})`)
+          .join(', ')
+
+        // Build call records array for data_context
+        const callRecords = missedOrVmCalls.map(c => ({
+          call_record_id: c.callRecordId,
+          call_start: c.callStart,
+          call_type: c.callType,
+          duration: c.duration,
+          recording_url: c.recordingUrl,
+        }))
+
+        if (match.type === 'lead' && match.match) {
+          const lead = match.match
+          const actionType = 'call_back'
+
+          const existing = await findExistingActionByPhone(
+            supabase, location.id, callerNumber, actionType
+          )
+
+          const prevCount = existing?.data_context?.call_count || 0
+          const totalCount = prevCount + callCount
+          const totalPriority = totalCount >= 2 ? 'critical' : 'high'
+
+          const result = await upsertConsolidatedAction(supabase, existing?.id || null, {
+            organization_id: ORG_ID,
+            location_id: location.id,
+            action_type: actionType,
+            lead_id: lead.id,
+            priority: totalPriority,
+            title: totalCount > 1
+              ? `Call back ${lead.first_name} ${lead.last_name} \u2014 called ${totalCount} times`
+              : `Call back ${lead.first_name} ${lead.last_name} \u2014 ${hasVoicemail ? 'left voicemail' : 'missed call'} at ${formatTime(lastCall.callStart)}`,
+            description: totalCount > 1
+              ? `${lead.source ? prettifySource(lead.source) + ' lead' : 'Lead'}. Called at ${callTimesDesc}.${hasVoicemail ? ' Left a voicemail \u2014 listen and call back.' : ''}`
+              : `${lead.source ? prettifySource(lead.source) + ' lead' : 'Lead'}. ${hasVoicemail ? 'They left a voicemail \u2014 listen and call back.' : 'They called and you missed it.'}`,
+            recommended_action: `Call ${lead.first_name} back at ${formatPhone(callerNumber)}.${hasVoicemail && voicemailRecording ? ' Listen to voicemail first.' : ''}`,
+            ai_suggestion: totalCount >= 2
+              ? `Called ${totalCount} times \u2014 they clearly need to reach you. Call back immediately.`
+              : 'They called YOU \u2014 this is the highest-intent signal. Call back within the hour.',
+            call_record_id: mostRecentCallRecordId,
+            source_engine: 'call_matcher',
+            data_context: {
+              caller_number: callerNumber,
+              lead_name: `${lead.first_name} ${lead.last_name}`,
+              lead_source: lead.source,
+              recording_url: voicemailRecording,
+              has_voicemail: hasVoicemail,
+              call_count: totalCount,
+              call_records: [
+                ...(existing?.data_context?.call_records || []),
+                ...callRecords,
+              ],
+            },
+          })
+          if (result === 'created') actionsCreated++
+          else if (result === 'updated') actionsUpdated++
+        } else if (match.type === 'student' && match.match) {
+          const student = match.match
+          const actionType = 'call_back'
+
+          const existing = await findExistingActionByPhone(
+            supabase, location.id, callerNumber, actionType
+          )
+
+          const prevCount = existing?.data_context?.call_count || 0
+          const totalCount = prevCount + callCount
+          const totalPriority = totalCount >= 2 ? 'critical' : 'medium'
+
+          const result = await upsertConsolidatedAction(supabase, existing?.id || null, {
+            organization_id: ORG_ID,
+            location_id: location.id,
+            action_type: actionType,
+            priority: totalPriority,
+            title: totalCount > 1
+              ? `Call back ${student.first_name} ${student.last_name} (student) \u2014 called ${totalCount} times`
+              : `Call back ${student.first_name} ${student.last_name} (student) \u2014 ${hasVoicemail ? 'voicemail' : 'missed'} at ${formatTime(lastCall.callStart)}`,
+            description: totalCount > 1
+              ? `Existing student. Called at ${callTimesDesc}.${hasVoicemail ? ' Left a voicemail.' : ''} May need to reschedule or has a question.`
+              : `Existing student. ${hasVoicemail ? 'Left a voicemail.' : 'Missed their call.'} May need to reschedule or has a question.`,
+            recommended_action: `Call ${student.first_name} back at ${formatPhone(callerNumber)}.`,
+            call_record_id: mostRecentCallRecordId,
+            source_engine: 'call_matcher',
+            data_context: {
+              caller_number: callerNumber,
+              student_name: `${student.first_name} ${student.last_name}`,
+              recording_url: voicemailRecording,
+              has_voicemail: hasVoicemail,
+              call_count: totalCount,
+              call_records: [
+                ...(existing?.data_context?.call_records || []),
+                ...callRecords,
+              ],
+            },
+          })
+          if (result === 'created') actionsCreated++
+          else if (result === 'updated') actionsUpdated++
+        } else {
+          // Unknown caller missed/voicemail
+          const actionType = 'create_lead'
+
+          const existing = await findExistingActionByPhone(
+            supabase, location.id, callerNumber, actionType
+          )
+
+          const prevCount = existing?.data_context?.call_count || 0
+          const totalCount = prevCount + callCount
+          const totalPriority = totalCount >= 2 ? 'critical' : (hasVoicemail ? 'high' : 'medium')
+
+          const result = await upsertConsolidatedAction(supabase, existing?.id || null, {
+            organization_id: ORG_ID,
+            location_id: location.id,
+            action_type: actionType,
+            priority: totalPriority,
+            title: totalCount > 1
+              ? `Call back ${formatPhone(callerNumber)} \u2014 called ${totalCount} times`
+              : `${hasVoicemail ? 'Voicemail' : 'Missed call'} from ${formatPhone(callerNumber)} \u2014 not in system`,
+            description: totalCount > 1
+              ? `Unknown caller${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. Called at ${callTimesDesc}.${hasVoicemail ? ' Left a voicemail \u2014 listen and call back.' : ''}`
+              : `Unknown caller${callerCity ? ` from ${callerCity}${callerState ? ', ' + callerState : ''}` : ''}. ${hasVoicemail ? 'Left a voicemail \u2014 listen and call back.' : 'Consider calling back.'}`,
+            recommended_action: `Call ${formatPhone(callerNumber)} back.${hasVoicemail && voicemailRecording ? ' Listen to voicemail first.' : ''} If interested, create a lead.`,
+            ai_suggestion: totalCount >= 2
+              ? `Called ${totalCount} times \u2014 clearly trying to reach you. High chance of being a real prospect.`
+              : hasVoicemail
                 ? 'Voicemail from unknown number \u2014 they made the effort to leave a message. High chance of being a real prospect.'
                 : 'Missed call from unknown number \u2014 could be a new lead or spam. Call back to find out.',
-              call_record_id: callRecordId,
-              source_engine: 'call_matcher',
-              data_context: {
-                caller_number: callerNumber,
-                caller_city: callerCity,
-                caller_state: callerState,
-                recording_url: recordingUrl,
-                is_voicemail: isVoicemail,
-              },
-            })
-            if (created) actionsCreated++
-          }
+            call_record_id: mostRecentCallRecordId,
+            source_engine: 'call_matcher',
+            data_context: {
+              caller_number: callerNumber,
+              caller_city: callerCity,
+              caller_state: callerState,
+              recording_url: voicemailRecording,
+              has_voicemail: hasVoicemail,
+              call_count: totalCount,
+              call_records: [
+                ...(existing?.data_context?.call_records || []),
+                ...callRecords,
+              ],
+            },
+          })
+          if (result === 'created') actionsCreated++
+          else if (result === 'updated') actionsUpdated++
         }
       }
 
@@ -361,6 +553,7 @@ export async function GET(request: Request) {
           metadata: {
             calls_processed: ctmCalls.length,
             actions_created: actionsCreated,
+            actions_updated: actionsUpdated,
             leads_updated: leadsUpdated,
           },
           updated_at: new Date().toISOString(),
@@ -372,6 +565,7 @@ export async function GET(request: Request) {
         location: location.name,
         calls_fetched: ctmCalls.length,
         actions_created: actionsCreated,
+        actions_updated: actionsUpdated,
         leads_updated: leadsUpdated,
       })
     } catch (err: any) {
