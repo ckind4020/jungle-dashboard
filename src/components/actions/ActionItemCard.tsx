@@ -223,6 +223,30 @@ export default function ActionItemCard({ item, onAction }: ActionItemCardProps) 
         {/* Title */}
         <h3 className="text-base font-semibold text-gray-900 mb-1">{item.title}</h3>
 
+        {/* Caller Contact Info */}
+        {(item.data_context?.caller_number || item.data_context?.ctm_email) && (
+          <div className="flex items-center gap-4 text-sm text-gray-600 mb-2">
+            {item.data_context.caller_number && (
+              <a
+                href={`tel:${item.data_context.caller_number}`}
+                className="inline-flex items-center gap-1.5 font-medium text-blue-600 hover:text-blue-800 transition-colors"
+              >
+                <Phone className="w-3.5 h-3.5" />
+                {item.data_context.caller_number}
+              </a>
+            )}
+            {item.data_context.ctm_email && (
+              <a
+                href={`mailto:${item.data_context.ctm_email}`}
+                className="inline-flex items-center gap-1.5 hover:text-blue-600 transition-colors"
+              >
+                <Mail className="w-3.5 h-3.5" />
+                {item.data_context.ctm_email}
+              </a>
+            )}
+          </div>
+        )}
+
         {/* Description */}
         <p className="text-sm text-gray-700 mb-3">{item.description}</p>
 
